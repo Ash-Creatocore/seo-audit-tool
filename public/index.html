@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SEO Audit Tool</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div class="page">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">SA</span>
+      <span class="brand-name">SEO Audit Tool</span>
+    </div>
+    <p class="brand-tagline">Crawl a site and get a real SEO health report — every number below comes from an actual crawl or a real API call, never a placeholder.</p>
+  </header>
+
+  <section class="panel form-panel">
+    <form id="audit-form">
+      <div class="field field-url">
+        <label for="url">Website URL</label>
+        <input id="url" name="url" type="text" placeholder="https://example.com" required />
+      </div>
+      <div class="field field-small">
+        <label for="maxPages">Pages to crawl</label>
+        <select id="maxPages" name="maxPages">
+          <option value="10">10</option>
+          <option value="20" selected>20</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+        </select>
+      </div>
+      <div class="field field-checkbox">
+        <label><input id="checkExternalLinks" type="checkbox" checked /> Check external links</label>
+      </div>
+      <button type="submit" id="submit-btn">Run audit</button>
+    </form>
+    <p class="form-error" id="form-error" hidden></p>
+  </section>
+
+  <section class="panel progress-panel" id="progress-panel" hidden>
+    <div class="progress-row">
+      <span id="progress-label">Crawling…</span>
+      <span id="progress-count">0 / 0</span>
+    </div>
+    <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+    <p class="progress-url" id="progress-url"></p>
+  </section>
+
+  <section class="results" id="results" hidden>
+
+    <div class="tab-bar no-print">
+      <button class="tab-btn active" data-tab="onpage" id="tabbtn-onpage">On-Page SEO</button>
+      <button class="tab-btn" data-tab="crawl" id="tabbtn-crawl">Site Crawl</button>
+      <button class="tab-btn" data-tab="index" id="tabbtn-index">Google Index &amp; Rank</button>
+      <button class="download-btn" id="download-btn">⬇ Download Report</button>
+    </div>
+
+    <!-- ===== ON-PAGE SEO TAB ===== -->
+    <div class="tab-panel" id="tab-onpage" data-report-title="On-Page SEO">
+      <div class="summary-grid">
+        <div class="panel score-tile">
+          <svg viewBox="0 0 120 120" class="score-ring" id="score-ring">
+            <circle cx="60" cy="60" r="52" class="ring-track" />
+            <circle cx="60" cy="60" r="52" class="ring-fill" id="ring-fill" />
+          </svg>
+          <div class="score-value-wrap">
+            <div class="score-value" id="score-value">–</div>
+            <div class="score-label">On-Page Score</div>
+          </div>
+        </div>
+        <div class="panel stat-tile">
+          <div class="stat-value" id="stat-pages">0</div>
+          <div class="stat-label">Pages crawled</div>
+        </div>
+        <div class="panel stat-tile status-critical-tile">
+          <div class="stat-value" id="stat-errors">0</div>
+          <div class="stat-label">Errors</div>
+        </div>
+        <div class="panel stat-tile status-warning-tile">
+          <div class="stat-value" id="stat-warnings">0</div>
+          <div class="stat-label">Warnings</div>
+        </div>
+        <div class="panel stat-tile status-notice-tile">
+          <div class="stat-value" id="stat-notices">0</div>
+          <div class="stat-label">Notices</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Site checks</h2>
+        <div class="badge-row" id="site-badges"></div>
+      </div>
+
+      <div class="panel" id="cwv-panel">
+        <h2>Core Web Vitals &amp; PageSpeed</h2>
+        <p class="panel-sub">Real data from the Google PageSpeed Insights API — not simulated.</p>
+        <div id="cwv-content"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Top issues</h2>
+        <table class="issues-table" id="issues-table">
+          <thead>
+            <tr><th></th><th>Issue</th><th>Pages affected</th><th></th></tr>
+          </thead>
+          <tbody id="issues-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ===== SITE CRAWL TAB ===== -->
+    <div class="tab-panel" id="tab-crawl" data-report-title="Site Crawl" hidden>
+      <div class="summary-grid crawl-summary-grid">
+        <div class="panel score-tile">
+          <svg viewBox="0 0 120 120" class="score-ring" id="health-ring">
+            <circle cx="60" cy="60" r="52" class="ring-track" />
+            <circle cx="60" cy="60" r="52" class="ring-fill" id="health-ring-fill" />
+          </svg>
+          <div class="score-value-wrap">
+            <div class="score-value" id="health-value">–</div>
+            <div class="score-label">Site Health</div>
+          </div>
+        </div>
+        <div class="panel stat-tile">
+          <div class="stat-value" id="stat-crawl-time">–</div>
+          <div class="stat-label">Crawl time</div>
+        </div>
+        <div class="panel stat-tile status-critical-tile">
+          <div class="stat-value" id="stat-broken">0</div>
+          <div class="stat-label">Broken links</div>
+        </div>
+        <div class="panel stat-tile status-warning-tile">
+          <div class="stat-value" id="stat-duplicates">0</div>
+          <div class="stat-label">Duplicate pages</div>
+        </div>
+        <div class="panel stat-tile status-notice-tile">
+          <div class="stat-value" id="stat-orphans">0</div>
+          <div class="stat-label">Orphan pages</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Crawl depth distribution</h2>
+        <p class="panel-sub">Pages by click-distance from the homepage, from the actual crawl.</p>
+        <div class="depth-chart" id="depth-chart"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Crawled pages</h2>
+        <table class="pages-table" id="pages-table">
+          <thead>
+            <tr><th>URL</th><th>Status</th><th>Title</th><th>Words</th><th>Score</th><th>Issues</th></tr>
+          </thead>
+          <tbody id="pages-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ===== GOOGLE INDEX & RANK TAB ===== -->
+    <div class="tab-panel" id="tab-index" data-report-title="Google Index &amp; Rank" hidden>
+      <div class="panel">
+        <h2>Indexing status</h2>
+        <p class="panel-sub">A live <code>site:</code> query against the Google Custom Search API for the audited URL only (checking every crawled page would burn the free daily quota fast). This is a heuristic, not official Google Search Console data.</p>
+        <div id="indexing-content"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Keyword rank tracker</h2>
+        <p class="panel-sub">Enter keywords to check with the real Google Custom Search API. Each keyword costs up to 3 API calls against the shared 100/day free quota, so check deliberately.</p>
+        <form id="rank-form">
+          <input type="text" id="rank-keywords" placeholder="e.g. roofing contractor near me, roof replacement cost" />
+          <button type="submit" id="rank-submit-btn">Check rankings</button>
+        </form>
+        <div id="rank-content"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Methodology &amp; limitations</h2>
+        <ul class="methodology-list">
+          <li>Indexing status is a <code>site:</code> query heuristic, not official Google Search Console data. For authoritative status, connect Search Console (a planned upgrade).</li>
+          <li>Rank tracking is bounded by the Custom Search API's 100-results-per-query cap and a 100-queries/day free quota — positions beyond the top 30 (default) or top 100 (max) may not be found without a paid quota increase.</li>
+          <li>Search-volume figures require a paid keyword-data source and are intentionally omitted rather than estimated.</li>
+          <li>Rank history (Change / Best Position) is stored locally on this server and starts accumulating from your first check — there is no historical data before that.</li>
+        </ul>
+      </div>
+    </div>
+
+  </section>
+</div>
+
+<template id="issue-row-template">
+  <tr class="issue-row">
+    <td class="issue-icon-cell"><span class="status-dot"></span></td>
+    <td class="issue-message"></td>
+    <td class="issue-count"></td>
+    <td class="issue-toggle">▾</td>
+  </tr>
+  <tr class="issue-detail-row" hidden>
+    <td colspan="4"><div class="issue-urls"></div></td>
+  </tr>
+</template>
+
+<script src="app.js"></script>
+</body>
+</html>

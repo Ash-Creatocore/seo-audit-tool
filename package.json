@@ -1,0 +1,21 @@
+{
+  "name": "seo-audit-tool",
+  "version": "1.0.0",
+  "description": "A self-hosted site-wide SEO audit tool (crawler + analyzer + dashboard), similar to Semrush Site Audit / SEO Site Checkup.",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "cheerio": "^1.0.0",
+    "cors": "^2.8.6",
+    "express": "^4.21.2",
+    "robots-parser": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
