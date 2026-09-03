@@ -51,9 +51,12 @@ function extractSitemapDirectives(robotsContent) {
 /** A sitemap file is either a <urlset> of real pages, or a <sitemapindex> of other sitemaps. */
 function parseSitemapXml(raw) {
   const isIndex = /<sitemapindex[\s>]/i.test(raw);
+  const isUrlset = /<urlset[\s>]/i.test(raw);
   const locMatches = raw.match(/<loc>([^<]+)<\/loc>/gi) || [];
   const locs = locMatches.map((m) => m.replace(/<\/?loc>/gi, '').trim());
-  return { isIndex, locs };
+  // A sitemap that has neither root element is not a valid sitemap file
+  // (often an HTML error page served with a 200 status).
+  return { isIndex, locs, malformed: !isIndex && !isUrlset };
 }
 
 async function fetchXmlFile(url) {
@@ -86,12 +89,14 @@ async function fetchSitemap(origin, robotsContent) {
   const foundSitemapUrls = [];
   const childSitemapsToFetch = [];
   const pageUrls = new Set();
+  let malformed = 0;
 
   for (const sitemapUrl of candidates) {
     const raw = await fetchXmlFile(sitemapUrl);
     if (raw == null) continue;
     foundSitemapUrls.push(sitemapUrl);
-    const { isIndex, locs } = parseSitemapXml(raw);
+    const { isIndex, locs, malformed: bad } = parseSitemapXml(raw);
+    if (bad) malformed++;
     if (isIndex) {
       childSitemapsToFetch.push(...locs);
     } else {
@@ -108,7 +113,8 @@ async function fetchSitemap(origin, robotsContent) {
     if (pageUrls.size >= 5000) break;
     const raw = await fetchXmlFile(childUrl);
     if (raw == null) continue;
-    const { locs } = parseSitemapXml(raw);
+    const { locs, malformed: bad } = parseSitemapXml(raw);
+    if (bad) malformed++;
     for (const loc of locs) {
       const n = normalizeUrl(loc);
       if (n) pageUrls.add(n);
@@ -119,6 +125,7 @@ async function fetchSitemap(origin, robotsContent) {
     exists: foundSitemapUrls.length > 0,
     sitemapUrls: foundSitemapUrls,
     urls: [...pageUrls].slice(0, 5000),
+    malformed,
   };
 }
 
@@ -127,29 +134,60 @@ async function fetchSitemap(origin, robotsContent) {
  */
 async function fetchPage(pageUrl) {
   const startedAt = Date.now();
+  // Follow redirects by hand (maxRedirects: 0 per hop) so we can record the
+  // real chain: every hop's URL and status code. That is what makes
+  // "redirect chain", "redirect loop" and "temporary redirect" findings
+  // measurable instead of guessed.
   const redirectChain = [];
+  const redirectStatuses = [];
+  let currentUrl = pageUrl;
   try {
-    const res = await axios.get(pageUrl, {
-      timeout: 15000,
-      maxRedirects: 5,
-      headers: { 'User-Agent': USER_AGENT, Accept: 'text/html,application/xhtml+xml' },
-      validateStatus: () => true,
-      // axios doesn't expose the redirect chain directly; we approximate via request path
-    });
+    let res;
+    for (let hop = 0; hop <= 8; hop++) {
+      res = await axios.get(currentUrl, {
+        timeout: 15000,
+        maxRedirects: 0,
+        headers: { 'User-Agent': USER_AGENT, Accept: 'text/html,application/xhtml+xml' },
+        validateStatus: () => true,
+        responseType: 'text',
+        transformResponse: [(d) => d],
+      });
+      if (res.status >= 300 && res.status < 400 && res.headers.location) {
+        let next;
+        try { next = new URL(res.headers.location, currentUrl).toString(); } catch { break; }
+        redirectChain.push({ from: currentUrl, to: next, status: res.status });
+        redirectStatuses.push(res.status);
+        if (redirectChain.some((h, i) => i < redirectChain.length - 1 && h.from === next) || next === currentUrl) {
+          // loop
+          return {
+            ok: true, url: pageUrl, finalUrl: currentUrl, redirected: true, status: res.status,
+            contentType: '', isHtml: false, html: '', responseTimeMs: Date.now() - startedAt,
+            headers: res.headers, redirectChain, redirectStatuses, redirectLoop: true, htmlBytes: 0,
+          };
+        }
+        currentUrl = next;
+        continue;
+      }
+      break;
+    }
     const responseTimeMs = Date.now() - startedAt;
-    const finalUrl = res.request?.res?.responseUrl || res.request?._currentUrl || pageUrl;
     const contentType = res.headers['content-type'] || '';
+    const html = typeof res.data === 'string' ? res.data : '';
     return {
       ok: true,
       url: pageUrl,
-      finalUrl,
-      redirected: normalizeUrl(finalUrl) !== normalizeUrl(pageUrl),
+      finalUrl: currentUrl,
+      redirected: normalizeUrl(currentUrl) !== normalizeUrl(pageUrl),
       status: res.status,
       contentType,
       isHtml: contentType.includes('text/html') || contentType === '',
-      html: typeof res.data === 'string' ? res.data : '',
+      html,
+      htmlBytes: Buffer.byteLength(html, 'utf8'),
       responseTimeMs,
       headers: res.headers,
+      redirectChain,
+      redirectStatuses,
+      redirectLoop: false,
     };
   } catch (err) {
     return {
@@ -205,6 +243,22 @@ async function fetchPageRendered(pageUrl, browser) {
     const status = response ? response.status() : 0;
     const finalUrl = page.url();
     const html = await page.content();
+    let headers = {};
+    try { headers = response ? await response.allHeaders() : {}; } catch { headers = {}; }
+    // Reconstruct the redirect chain from the response's request history.
+    const redirectChain = [];
+    const redirectStatuses = [];
+    try {
+      let req = response ? response.request().redirectedFrom() : null;
+      const hops = [];
+      while (req) { hops.unshift(req); req = req.redirectedFrom(); }
+      for (const r of hops) {
+        const rr = await r.response();
+        const st = rr ? rr.status() : 0;
+        redirectStatuses.push(st);
+        redirectChain.push({ from: r.url(), status: st });
+      }
+    } catch { /* chain unavailable — leave empty rather than invent */ }
     return {
       ok: true,
       url: pageUrl,
@@ -214,8 +268,12 @@ async function fetchPageRendered(pageUrl, browser) {
       contentType: 'text/html',
       isHtml: true,
       html,
+      htmlBytes: Buffer.byteLength(html, 'utf8'),
       responseTimeMs: Date.now() - startedAt,
-      headers: {},
+      headers,
+      redirectChain,
+      redirectStatuses,
+      redirectLoop: false,
     };
   } catch (err) {
     return {
@@ -375,6 +433,21 @@ async function crawlSite(startUrl, options = {}, onProgress = () => {}) {
     });
 
     for (const result of fetched) {
+      // If a URL redirected to a page we already crawled (or will crawl),
+      // keep only the redirect finding — analysing the target's content a
+      // second time would double-count every issue on it.
+      if (result.redirected) {
+        const target = normalizeUrl(result.finalUrl);
+        if (target && (visited.has(target) || queuedUrls.has(target))) {
+          result.html = '';
+          result.isHtml = false;
+          result.contentStripped = true;
+        } else if (target) {
+          visited.add(target);
+          queuedUrls.add(target);
+          if (!depthByUrl.has(target)) depthByUrl.set(target, result.depth);
+        }
+      }
       pages.push(result);
       onProgress({ crawled: pages.length, total: Math.min(maxPages, visited.size + queue.length), currentUrl: result.url });
 
@@ -422,7 +495,7 @@ async function crawlSite(startUrl, options = {}, onProgress = () => {}) {
           headers: { 'User-Agent': USER_AGENT },
           validateStatus: () => true,
         });
-        return { url: link, status: res.status, broken: res.status >= 400 };
+        return { url: link, status: res.status, broken: res.status >= 400, unreachable: false };
       } catch (err) {
         // Some servers reject HEAD; fall back to GET
         try {
@@ -432,9 +505,12 @@ async function crawlSite(startUrl, options = {}, onProgress = () => {}) {
             headers: { 'User-Agent': USER_AGENT },
             validateStatus: () => true,
           });
-          return { url: link, status: res.status, broken: res.status >= 400 };
-        } catch {
-          return { url: link, status: 0, broken: true };
+          return { url: link, status: res.status, broken: res.status >= 400, unreachable: false };
+        } catch (err2) {
+          // Could not connect at all (DNS, timeout, refused). Reported as
+          // "unreachable", not "broken" — it may be transient or a network
+          // restriction on this server rather than a dead link.
+          return { url: link, status: 0, broken: false, unreachable: true, error: err2.code || err2.message };
         }
       }
     });
@@ -449,6 +525,7 @@ async function crawlSite(startUrl, options = {}, onProgress = () => {}) {
     totalInternalLinksFound: allInternalLinksFound.size,
     orphanPages,
     depthDistribution,
+    inboundLinkCount: Object.fromEntries(inboundLinkCount),
     renderJsRequested,
     renderJsUsed: !!browser,
     renderJsUnavailableReason,

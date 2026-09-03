@@ -6,7 +6,8 @@
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "postinstall": "node scripts/install-browser.js"
   },
   "dependencies": {
     "axios": "^1.7.9",

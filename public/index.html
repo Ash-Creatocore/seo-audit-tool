@@ -13,7 +13,7 @@
       <span class="brand-mark">SA</span>
       <span class="brand-name">SEO Audit Tool</span>
     </div>
-    <p class="brand-tagline">Crawl a site and get a real SEO health report — every number below comes from an actual crawl or a real API call, never a placeholder.</p>
+    <p class="brand-tagline">Crawl a site and get a real SEO health report — every number below comes from an actual crawl, a real request, or a real API call, never a placeholder.</p>
   </header>
 
   <section class="panel form-panel">
@@ -53,9 +53,13 @@
 
   <section class="results" id="results" hidden>
 
+    <div class="category-strip" id="category-strip"></div>
+
     <div class="tab-bar no-print">
       <button class="tab-btn active" data-tab="onpage" id="tabbtn-onpage">On-Page SEO</button>
+      <button class="tab-btn" data-tab="content" id="tabbtn-content">Content &amp; Keywords</button>
       <button class="tab-btn" data-tab="crawl" id="tabbtn-crawl">Site Crawl</button>
+      <button class="tab-btn" data-tab="technical" id="tabbtn-technical">Technical &amp; Security</button>
       <button class="tab-btn" data-tab="index" id="tabbtn-index">Google Index &amp; Rank</button>
       <button class="download-btn" id="download-btn">⬇ Download Report</button>
     </div>
@@ -70,7 +74,7 @@
           </svg>
           <div class="score-value-wrap">
             <div class="score-value" id="score-value">–</div>
-            <div class="score-label">On-Page Score</div>
+            <div class="score-label">Overall Score</div>
           </div>
         </div>
         <div class="panel stat-tile">
@@ -97,20 +101,61 @@
         <p class="unconfigured-note" id="renderjs-note" hidden></p>
       </div>
 
+      <div class="panel">
+        <h2>Google search preview</h2>
+        <p class="panel-sub">How the homepage's real title and description render in a Google result (desktop widths; Google truncates by pixel width, so treat this as a close approximation).</p>
+        <div class="serp-preview" id="serp-preview"></div>
+      </div>
+
       <div class="panel" id="cwv-panel">
         <h2>Core Web Vitals &amp; PageSpeed</h2>
-        <p class="panel-sub">Real data from the Google PageSpeed Insights API — not simulated.</p>
+        <p class="panel-sub">Real Lighthouse data from the Google PageSpeed Insights API — mobile and desktop. Field data from the Chrome UX Report is used when Google has it for this URL.</p>
         <div id="cwv-content"></div>
       </div>
 
       <div class="panel">
-        <h2>Top issues</h2>
+        <h2>All issues</h2>
+        <div class="filter-row no-print" id="issue-filters"></div>
         <table class="issues-table" id="issues-table">
           <thead>
-            <tr><th></th><th>Issue</th><th>Pages affected</th><th></th></tr>
+            <tr><th></th><th>Issue</th><th>Category</th><th>Pages affected</th><th></th></tr>
           </thead>
           <tbody id="issues-tbody"></tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- ===== CONTENT & KEYWORDS TAB ===== -->
+    <div class="tab-panel" id="tab-content" data-report-title="Content &amp; Keywords" hidden>
+      <div class="panel">
+        <h2>Most common keywords (homepage)</h2>
+        <p class="panel-sub">Term frequency computed from the homepage's visible text after stripping scripts, styles and stop-words. "In title / description / H1" flags whether that exact term appears there.</p>
+        <table class="keyword-table" id="keyword-table">
+          <thead><tr><th>Keyword</th><th>Count</th><th>Density</th><th>In title</th><th>In description</th><th>In H1</th></tr></thead>
+          <tbody id="keyword-tbody"></tbody>
+        </table>
+        <div class="phrase-row" id="phrase-row"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Heading outline (homepage)</h2>
+        <p class="panel-sub">Every H1–H6 in document order, so hierarchy gaps are visible.</p>
+        <div class="heading-counts" id="heading-counts"></div>
+        <ol class="heading-outline" id="heading-outline"></ol>
+      </div>
+
+      <div class="panel">
+        <h2>Content stats per page</h2>
+        <table class="pages-table" id="content-table">
+          <thead><tr><th>URL</th><th>Words</th><th>Text/HTML</th><th>H1</th><th>H2</th><th>Images</th><th>Missing alt</th><th>Top keyword</th></tr></thead>
+          <tbody id="content-tbody"></tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <h2>Social &amp; sharing</h2>
+        <p class="panel-sub">Profile links are detected on any crawled page (they usually live in the footer); Open Graph / Twitter tags are read from the homepage.</p>
+        <div id="social-content"></div>
       </div>
     </div>
 
@@ -155,10 +200,39 @@
         <h2>Crawled pages</h2>
         <table class="pages-table" id="pages-table">
           <thead>
-            <tr><th>URL</th><th>Status</th><th>Title</th><th>Words</th><th>Score</th><th>Issues</th></tr>
+            <tr><th>URL</th><th>Status</th><th>Depth</th><th>Title</th><th>Words</th><th>Score</th><th>Issues</th></tr>
           </thead>
           <tbody id="pages-tbody"></tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- ===== TECHNICAL & SECURITY TAB ===== -->
+    <div class="tab-panel" id="tab-technical" data-report-title="Technical &amp; Security" hidden>
+      <div class="panel">
+        <h2>Server &amp; security checks</h2>
+        <p class="panel-sub">Each row is a real request, TLS handshake, or DNS lookup made during this audit. "Could not check" means exactly that — the measurement failed, so no verdict is shown.</p>
+        <table class="checks-table" id="site-checks-table">
+          <thead><tr><th></th><th>Check</th><th>Result</th></tr></thead>
+          <tbody id="site-checks-tbody"></tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <h2>Lighthouse audits (PageSpeed Insights)</h2>
+        <p class="panel-sub">Mobile run unless noted. Values are Lighthouse's own measurements for this URL.</p>
+        <div id="lighthouse-content"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Detected technologies &amp; structured data</h2>
+        <p class="panel-sub">Signature-based detection from the homepage HTML (script sources, meta generator, well-known asset paths). Only what was actually found is listed.</p>
+        <div id="tech-content"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Safe Browsing</h2>
+        <div id="safebrowsing-content"></div>
       </div>
     </div>
 
@@ -166,13 +240,13 @@
     <div class="tab-panel" id="tab-index" data-report-title="Google Index &amp; Rank" hidden>
       <div class="panel">
         <h2>Indexing status</h2>
-        <p class="panel-sub">A live <code>site:</code> query against the Google Custom Search API for the audited URL only (checking every crawled page would burn the free daily quota fast). This is a heuristic, not official Google Search Console data.</p>
+        <p class="panel-sub">A live <code>site:</code> query against the Google Custom Search API for the audited URL only. This is a heuristic, not official Google Search Console data.</p>
         <div id="indexing-content"></div>
       </div>
 
       <div class="panel">
         <h2>Keyword rank tracker</h2>
-        <p class="panel-sub">Enter keywords to check with the real Google Custom Search API. Each keyword costs up to 3 API calls against the shared 100/day free quota, so check deliberately.</p>
+        <p class="panel-sub">Enter keywords to check with the real Google Custom Search API. Each keyword costs up to 3 API calls against the shared 100/day free quota.</p>
         <form id="rank-form">
           <input type="text" id="rank-keywords" placeholder="e.g. roofing contractor near me, roof replacement cost" />
           <button type="submit" id="rank-submit-btn">Check rankings</button>
@@ -181,12 +255,12 @@
       </div>
 
       <div class="panel">
-        <h2>Methodology &amp; limitations</h2>
+        <h2>What this tool deliberately does not show</h2>
         <ul class="methodology-list">
-          <li>Indexing status is a <code>site:</code> query heuristic, not official Google Search Console data. For authoritative status, connect Search Console (a planned upgrade).</li>
-          <li>Rank tracking is bounded by the Custom Search API's 100-results-per-query cap and a 100-queries/day free quota — positions beyond the top 30 (default) or top 100 (max) may not be found without a paid quota increase.</li>
-          <li>Search-volume figures require a paid keyword-data source and are intentionally omitted rather than estimated.</li>
-          <li>Rank history (Change / Best Position) is stored locally on this server and starts accumulating from your first check — there is no historical data before that.</li>
+          <li><strong>Backlinks, domain authority, referring domains</strong> — these require a paid link index (Semrush, Ahrefs, Moz). Rather than display an estimate, this tool omits them.</li>
+          <li><strong>Organic traffic and search volume</strong> — require paid clickstream/keyword data. Omitted for the same reason.</li>
+          <li><strong>Competitor domains, Google Business Profile, reviews</strong> — require third-party data sources not integrated here.</li>
+          <li>Indexing status is a <code>site:</code> query heuristic; rank tracking is bounded by the Custom Search API's result cap; rank history starts from your first check on this server.</li>
         </ul>
       </div>
     </div>
@@ -198,11 +272,12 @@
   <tr class="issue-row">
     <td class="issue-icon-cell"><span class="status-dot"></span></td>
     <td class="issue-message"></td>
+    <td class="issue-category"></td>
     <td class="issue-count"></td>
     <td class="issue-toggle">▾</td>
   </tr>
   <tr class="issue-detail-row" hidden>
-    <td colspan="4"><div class="issue-urls"></div></td>
+    <td colspan="5"><div class="issue-urls"></div></td>
   </tr>
 </template>
 

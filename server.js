@@ -8,7 +8,8 @@ const path = require('path');
 const { crawlSite, normalizeUrl } = require('./src/crawler');
 const { analyzePage } = require('./src/analyzer');
 const { summarize } = require('./src/scoring');
-const { getCoreWebVitals, checkIndexing, checkKeywordRank } = require('./src/externalApis');
+const { getCoreWebVitals, checkIndexing, checkKeywordRank, checkSafeBrowsing } = require('./src/externalApis');
+const { runSiteChecks } = require('./src/siteChecks');
 const { recordAndDiff } = require('./src/rankHistory');
 
 const app = express();
@@ -79,6 +80,7 @@ app.post('/api/audit', requireApiKey, auditLimiter, async (req, res) => {
     id,
     startUrl: normalized,
     status: 'running', // running | done | error
+    phase: 'crawling', // crawling | analyzing | site checks | pagespeed | done
     crawled: 0,
     total: 1,
     currentUrl: normalized,
@@ -109,8 +111,37 @@ app.post('/api/audit', requireApiKey, auditLimiter, async (req, res) => {
       );
       const crawlTimeMs = Date.now() - crawlStartedAt;
 
-      const pageAudits = crawlResult.pages.map((page) => analyzePage(page));
-      const summary = summarize(crawlResult, pageAudits, { crawlTimeMs });
+      job.phase = 'analyzing';
+      const pageAudits = crawlResult.pages.map((page) => {
+        const audit = analyzePage(page, { isStartPage: (page.finalUrl || page.url) === normalized || page.url === normalized });
+        audit.depth = page.depth ?? null;
+        return audit;
+      });
+      const startAudit = pageAudits.find((p) => p.meta.finalUrl === normalized || p.meta.url === normalized) || pageAudits[0];
+
+      // Site-level technical checks (HTTPS redirect, www, TLS, HTTP/2, DNS,
+      // SPF/DMARC, favicon, custom 404, llms.txt, sampled broken images and
+      // assets, robots/sitemap quality). Real requests; 'unknown' when a
+      // check genuinely couldn't be made.
+      job.phase = 'site checks';
+      let siteChecks = { checks: [], issues: [] };
+      try {
+        const imageUrls = pageAudits.flatMap((p) => p.details?.imageUrls || []).filter((u) => { try { return new URL(u).origin === new URL(normalized).origin; } catch { return false; } });
+        const assetUrls = pageAudits.flatMap((p) => p.details?.assetUrls || []).filter((u) => { try { return new URL(u).origin === new URL(normalized).origin; } catch { return false; } });
+        siteChecks = await runSiteChecks({
+          startUrl: normalized,
+          robots: crawlResult.robots,
+          sitemap: crawlResult.sitemap,
+          startPageMeta: startAudit?.meta,
+          imageUrls,
+          assetUrls,
+        });
+      } catch (err) {
+        siteChecks = { checks: [{ id: 'site-checks', label: 'Site checks', status: 'unknown', value: null, note: `Site checks failed: ${err.message}`, category: 'technical' }], issues: [] };
+      }
+
+      const summary = summarize(crawlResult, pageAudits, { crawlTimeMs, siteCheckIssues: siteChecks.issues });
+      summary.siteChecks = siteChecks.checks;
       // Honest JS-rendering status: whether it was asked for, whether it
       // actually ran, and why not if it didn't — never silently downgraded.
       summary.renderJs = {
@@ -118,10 +149,32 @@ app.post('/api/audit', requireApiKey, auditLimiter, async (req, res) => {
         used: crawlResult.renderJsUsed,
         unavailableReason: crawlResult.renderJsUnavailableReason,
       };
+      // Homepage-level details for the dashboard (keywords, headings, SERP
+      // preview inputs, social profiles, tech signatures, structured data).
+      summary.homepage = startAudit
+        ? {
+            url: startAudit.meta.finalUrl,
+            title: startAudit.meta.title,
+            metaDescription: startAudit.meta.metaDescription,
+            keywords: startAudit.details?.keywords || null,
+            headings: startAudit.details?.headings || [],
+            headingCounts: startAudit.meta.headingCounts || null,
+            // Social links and tech signatures usually live in shared
+            // headers/footers, so aggregate them across every crawled page.
+            socialProfiles: Object.assign({}, ...pageAudits.map((p) => p.details?.socialProfiles || {}).reverse(), startAudit.details?.socialProfiles || {}),
+            technologies: [...new Set(pageAudits.flatMap((p) => p.details?.technologies || []))],
+            structuredData: startAudit.details?.structuredData || null,
+            openGraph: startAudit.details?.openGraph || {},
+            twitter: startAudit.details?.twitter || {},
+            links: startAudit.details?.links || null,
+            hreflang: startAudit.details?.hreflang || [],
+            meta: startAudit.meta,
+          }
+        : null;
 
-      // Real Core Web Vitals for the audited URL (PageSpeed Insights).
-      // If no API key is configured, this returns { configured: false } —
-      // the frontend must show that honestly, never a fake LCP/CLS/INP.
+      // Real Lighthouse / Core Web Vitals (mobile + desktop) from PageSpeed
+      // Insights — keyless requests work at a small quota; a key raises it.
+      job.phase = 'pagespeed';
       try {
         summary.coreWebVitals = await getCoreWebVitals(normalized);
       } catch (err) {
@@ -129,17 +182,24 @@ app.post('/api/audit', requireApiKey, auditLimiter, async (req, res) => {
       }
 
       // Real (heuristic) indexing check for the root URL only, to conserve
-      // the Custom Search API's free daily quota. See METHODOLOGY note in
-      // the frontend — this is a `site:` query, not Search Console data.
+      // the Custom Search API's free daily quota.
       try {
         summary.indexing = await checkIndexing(normalized);
       } catch (err) {
         summary.indexing = { configured: true, status: 'uncertain', error: err.message };
       }
 
+      // Optional Google Safe Browsing (needs a free key; otherwise "not configured").
+      try {
+        summary.safeBrowsing = await checkSafeBrowsing(normalized);
+      } catch (err) {
+        summary.safeBrowsing = { configured: true, ok: false, error: err.message };
+      }
+
       job.status = 'done';
+      job.phase = 'done';
       job.summary = summary;
-      job.pages = pageAudits.map((p) => ({ meta: p.meta, issues: p.issues }));
+      job.pages = pageAudits.map((p) => ({ meta: p.meta, issues: p.issues, depth: p.depth, details: { keywords: p.details?.keywords ? { topKeywords: p.details.keywords.topKeywords.slice(0, 5) } : null, headings: (p.details?.headings || []).slice(0, 20), links: p.details?.links || null, structuredData: p.details?.structuredData || null } }));
       job.robots = crawlResult.robots.exists;
       job.sitemap = crawlResult.sitemap.exists;
     } catch (err) {
@@ -201,7 +261,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`SEO Audit Tool running at http://localhost:${PORT}`);
   if (!process.env.GOOGLE_PAGESPEED_API_KEY) {
-    console.warn('GOOGLE_PAGESPEED_API_KEY not set — Core Web Vitals will report as unconfigured, not fake data.');
+    console.warn('GOOGLE_PAGESPEED_API_KEY not set — PageSpeed Insights will run keyless (small quota); failures are reported honestly, never faked.');
   }
   if (!process.env.GOOGLE_CUSTOM_SEARCH_API_KEY || !process.env.GOOGLE_CUSTOM_SEARCH_ENGINE_ID) {
     console.warn('GOOGLE_CUSTOM_SEARCH_API_KEY / GOOGLE_CUSTOM_SEARCH_ENGINE_ID not set — indexing & rank checks will report as unconfigured, not fake data.');

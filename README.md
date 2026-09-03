@@ -3,8 +3,9 @@
 A self-hosted, full-site SEO crawler and audit dashboard — similar in spirit to
 Semrush Site Audit, SEO Site Checkup, or Seobility. Give it a URL, it crawls the
 site (same-origin, respecting `robots.txt`), analyzes every page it finds, and
-gives you a scored report across three tabs: **On-Page SEO**, **Site Crawl**,
-and **Google Index & Rank**.
+gives you a scored report across five tabs: **On-Page SEO**, **Content &
+Keywords**, **Site Crawl**, **Technical & Security**, and **Google Index &
+Rank**.
 
 **Every number in this tool is either computed from a real crawl/API call, or
 the UI explicitly says it's not configured. Nothing is ever faked, randomized,
@@ -14,49 +15,77 @@ integrations below — if you don't add API keys, those sections show an honest
 
 ## What it checks
 
-**Per page:** title tag (missing/too short/too long), meta description
-(missing/short/long), H1 tags (missing/multiple), thin content (word count),
-images missing `alt` text, canonical tag (missing/not self-referencing), mobile
-viewport meta tag, HTTPS usage, HTTP status (4xx/5xx, redirects), slow response
-time, `noindex` detection, Open Graph tags, Twitter Card tags, structured data
-(JSON-LD/microdata).
+The check list was built by cataloguing what Semrush Site Audit, SEO Site
+Checkup, SEOptimer, Seobility and Rank Math's analyzer report, then
+implementing every check that can be **measured directly** from the site.
+Checks that require paid third-party data (backlinks, domain authority,
+traffic estimates, keyword volume, competitor lists) are deliberately left
+out and the dashboard says so, rather than showing an estimate.
 
-**Site-wide (Site Crawl tab):** `robots.txt` present, sitemap present —
-checking both the conventional `/sitemap.xml` **and** any sitemap(s) declared
-via a `Sitemap:` line in robots.txt, and correctly following one level of
-`<sitemapindex>` so a sitemap-of-sitemaps doesn't get mistaken for a list of
-pages — duplicate titles across pages, duplicate meta descriptions across
-pages, broken internal/external links, orphan pages (in the sitemap but not
-linked from anywhere crawled), crawl-depth distribution, a per-page score,
-and an overall **Site Health** score.
+**Meta & indexing (per page):** title (missing / length / multiple), meta
+description (missing / length), `lang`, charset, doctype, canonical (missing
+/ multiple / relative / http-on-https / malformed / self-referencing),
+`noindex` via meta *and* `X-Robots-Tag` header, `nofollow`, meta refresh,
+hreflang (invalid values, duplicates, missing self-reference, missing
+x-default), favicon declaration.
 
-**Optional JavaScript rendering:** by default the crawler fetches raw HTML,
-which is accurate for the large majority of sites (WordPress, Webflow,
-server-rendered pages) but sees an empty or near-empty page for a
-client-rendered SPA (React/Vue/etc.) — the real content only exists after JS
-runs. Check **"Render JavaScript"** in the form to crawl through a real
-headless browser instead. This is opt-in and slower (a full browser tab per
-page instead of a plain HTTP request), and it degrades honestly: if the box
-is checked but the server can't actually render (the `playwright` package
-isn't installed, or its browser can't launch — e.g. a memory-constrained
-host missing system libraries), the report says so explicitly in a "Site
-checks" badge and a note, and falls back to a plain-HTML crawl rather than
-silently pretending it rendered.
+**Content & keywords:** word count / thin content, text-to-HTML ratio, most
+common keywords with density and whether each appears in title /
+description / H1, repeated phrases, keyword-stuffing signal, duplicate titles
+/ descriptions / H1s across pages, near-duplicate content across pages.
 
-**Core Web Vitals (On-Page tab):** real LCP / CLS / INP / Performance score
-from the Google PageSpeed Insights API (free, real-user field data when
-available, Lighthouse lab data otherwise). Requires a free API key — see
-below.
+**Headings & structure:** H1 missing / multiple / identical to title / too
+long, empty headings, skipped heading levels, H2 absence on long pages, full
+heading outline.
 
-**Google Index & Rank tab:** an indexing heuristic (a live `site:` query
-against the Google Custom Search API) and a keyword rank tracker (pages
-through real Custom Search results looking for your domain), with
-Change/Best-Position computed from a small local history file. Requires two
-free API credentials — see below.
+**Links & URLs:** internal / external / nofollow counts, empty and generic
+("click here") anchor text, too many links, `target=_blank` without
+`rel=noopener`, HTTP links on HTTPS pages, underscores / uppercase / long /
+parameter-heavy URLs, broken internal links (4xx/5xx), redirect chains and
+loops (every hop recorded), temporary vs permanent redirects, sampled
+broken external links (4xx/5xx reported separately from "unreachable"),
+pages with a single inbound link, pages deeper than 3 clicks, orphan pages.
+
+**Images:** missing alt, missing width/height, lazy-loading, WebP/AVIF and
+srcset usage, sampled broken images (real HEAD requests).
+
+**Technical HTML:** deprecated tags, frames, iframes, Flash, inline styles,
+nested tables, DOM size, HTML size, viewport (presence and
+`width=device-width`), media queries, AMP, render-blocking `<head>`
+resources, script/stylesheet counts, mixed content, sampled broken JS/CSS
+files, JSON-LD parse validity and `@type` list, microdata, identity /
+LocalBusiness schema, analytics / tag-manager / Facebook Pixel detection,
+signature-based tech detection (WordPress, Shopify, Wix, Webflow,
+GoHighLevel, React/Next, jQuery, CDN assets…), plaintext email addresses.
+
+**Server & security (site level — real requests, TLS handshakes and DNS
+lookups):** HTTP→HTTPS redirect, www/non-www resolution, homepage redirect
+chain, TLS certificate (issuer, expiry, trust, protocol version), HTTP/2 via
+ALPN, A/AAAA records, IPv6, nameservers, SPF, DMARC, HSTS and five other
+security headers, server signature / X-Powered-By exposure, gzip/brotli
+compression, custom 404 (soft-404 detection), `llms.txt`, `ads.txt`,
+robots.txt validity and `Sitemap:` directive, sitemap format / http-URLs /
+off-host URLs, favicon.
+
+**Performance (Google PageSpeed Insights, real Lighthouse runs — mobile and
+desktop):** Performance / SEO / Accessibility / Best-practices scores, LCP,
+CLS, INP (field data when Google has it), FCP, TBT, Speed Index, TTFB,
+total page weight, request count, plus named audits: render-blocking
+resources, JS execution time, CSS/JS minification, cache TTLs, image
+compression / modern formats / sizing, text compression, DOM size, console
+errors, legible font sizes, tap targets, crawlable links, indexability,
+robots.txt validity, hreflang, canonical, image alt, color contrast, HTTPS.
+PageSpeed works **without an API key** at a small quota; a free key raises
+it.
+
+**Google Index & Rank (optional Custom Search API):** `site:` indexing
+heuristic and keyword position tracking with real history. **Safe Browsing
+(optional key):** malware / phishing listing status.
 
 Each finding is scored **error / warning / notice**, rolled into an overall
-0–100 SEO score, and grouped into a "Top issues" list showing how many pages
-each issue affects (click a row to see the URLs).
+0–100 score, ten category scores (Meta, Content, Structure, Links, Images,
+Technical, Security, Performance, Social, Crawlability) and a Site Health
+score, and listed with the affected URLs.
 
 ## Requirements
 
@@ -75,12 +104,14 @@ crawled.
 
 Set a different port with `PORT=8080 npm start`.
 
-**Enabling JavaScript rendering** requires the `playwright` package's browser
-binary, which is installed automatically the first time you run
-`npm install` in a normal environment (it downloads a bundled Chromium as
-part of the `playwright` dependency's own install step). Nothing further to
-configure — just check the box in the form. See the JS-rendering note above
-for what happens if a given host can't run it.
+**Enabling JavaScript rendering** requires Playwright's Chromium binary.
+`npm install` runs `scripts/install-browser.js` (a `postinstall` hook) which
+downloads it best-effort and **never fails the build** — if a host can't
+download or run it, the app still deploys and "Render JavaScript" reports
+itself as unavailable. On Render, set `PLAYWRIGHT_BROWSERS_PATH` to
+`/opt/render/project/src/.playwright` so the binary downloaded during the
+build persists into the running service. Set `SKIP_BROWSER_INSTALL=1` to
+skip the download entirely.
 
 ## Protecting this before you deploy it publicly
 
@@ -109,11 +140,21 @@ which only returns data for a job ID the caller already has).
 
 ## Optional: enable the real Google integrations
 
-Without these, the tool still works fully for crawling and on-page analysis —
-the Core Web Vitals and Google Index & Rank sections will just show an honest
-"not configured" message instead of data.
+Without these, the tool still works fully for crawling, on-page analysis,
+server/security checks and (keyless, low-quota) PageSpeed — the Google Index
+& Rank and Safe Browsing sections show an honest "not configured" message
+instead of data.
 
-### 1. Core Web Vitals — Google PageSpeed Insights API (free)
+### 0. Safe Browsing (optional, free)
+
+Enable the **Safe Browsing API** in Google Cloud Console and set
+`GOOGLE_SAFE_BROWSING_API_KEY`. Without it the dashboard shows "not checked"
+— never "clean".
+
+### 1. Core Web Vitals — Google PageSpeed Insights API (free; key optional)
+
+PageSpeed Insights already runs without a key, but Google's keyless quota is
+small (a handful of runs per day per IP). A free key raises it substantially.
 
 1. Go to the [Google Cloud Console](https://console.cloud.google.com/), create
    or select a project.
