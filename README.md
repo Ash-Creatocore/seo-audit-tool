@@ -21,11 +21,27 @@ viewport meta tag, HTTPS usage, HTTP status (4xx/5xx, redirects), slow response
 time, `noindex` detection, Open Graph tags, Twitter Card tags, structured data
 (JSON-LD/microdata).
 
-**Site-wide (Site Crawl tab):** `robots.txt` present, `sitemap.xml` present,
-duplicate titles across pages, duplicate meta descriptions across pages,
-broken internal/external links, orphan pages (in the sitemap but not linked
-from anywhere crawled), crawl-depth distribution, a per-page score, and an
-overall **Site Health** score.
+**Site-wide (Site Crawl tab):** `robots.txt` present, sitemap present —
+checking both the conventional `/sitemap.xml` **and** any sitemap(s) declared
+via a `Sitemap:` line in robots.txt, and correctly following one level of
+`<sitemapindex>` so a sitemap-of-sitemaps doesn't get mistaken for a list of
+pages — duplicate titles across pages, duplicate meta descriptions across
+pages, broken internal/external links, orphan pages (in the sitemap but not
+linked from anywhere crawled), crawl-depth distribution, a per-page score,
+and an overall **Site Health** score.
+
+**Optional JavaScript rendering:** by default the crawler fetches raw HTML,
+which is accurate for the large majority of sites (WordPress, Webflow,
+server-rendered pages) but sees an empty or near-empty page for a
+client-rendered SPA (React/Vue/etc.) — the real content only exists after JS
+runs. Check **"Render JavaScript"** in the form to crawl through a real
+headless browser instead. This is opt-in and slower (a full browser tab per
+page instead of a plain HTTP request), and it degrades honestly: if the box
+is checked but the server can't actually render (the `playwright` package
+isn't installed, or its browser can't launch — e.g. a memory-constrained
+host missing system libraries), the report says so explicitly in a "Site
+checks" badge and a note, and falls back to a plain-HTML crawl rather than
+silently pretending it rendered.
 
 **Core Web Vitals (On-Page tab):** real LCP / CLS / INP / Performance score
 from the Google PageSpeed Insights API (free, real-user field data when
@@ -58,6 +74,38 @@ crawl (10–100), and click **Run audit**. Results update live as pages are
 crawled.
 
 Set a different port with `PORT=8080 npm start`.
+
+**Enabling JavaScript rendering** requires the `playwright` package's browser
+binary, which is installed automatically the first time you run
+`npm install` in a normal environment (it downloads a bundled Chromium as
+part of the `playwright` dependency's own install step). Nothing further to
+configure — just check the box in the form. See the JS-rendering note above
+for what happens if a given host can't run it.
+
+## Protecting this before you deploy it publicly
+
+Out of the box, `/api/audit` and `/api/rank-check` are open to anyone who
+finds your server's URL — and each request does real work (a live crawl, or
+Google API quota). Before pointing a public frontend (e.g. a GHL AI Studio
+app) at a deployed instance, set these two things:
+
+- **`API_SHARED_SECRET`** — an optional shared secret. When set, both
+  endpoints require an `X-API-Key` header matching it, or they respond `401`.
+  Leave it unset for local development; the server logs a warning on startup
+  reminding you it's open if you forget to set it before deploying.
+- **Rate limiting** is on by default (20 audits and 20 rank-checks per IP per
+  15 minutes) — no setup needed, but tune it with `RATE_LIMIT_MAX_AUDITS`,
+  `RATE_LIMIT_MAX_RANK_CHECKS`, and `RATE_LIMIT_WINDOW_MINUTES` if your usage
+  pattern needs something different.
+
+```bash
+export API_SHARED_SECRET=pick-a-long-random-string
+npm start
+```
+
+Then have your frontend send `X-API-Key: pick-a-long-random-string` on every
+call to `/api/audit` and `/api/rank-check` (not needed for `GET /api/audit/:id`,
+which only returns data for a job ID the caller already has).
 
 ## Optional: enable the real Google integrations
 
@@ -110,11 +158,13 @@ integrate.
 
 ## How it works
 
-- `src/crawler.js` — BFS crawler. Fetches `robots.txt` and `sitemap.xml`,
-  follows same-origin links up to `maxPages`, respects `robots.txt` disallow
-  rules, tracks crawl depth and inbound link counts (for orphan-page
-  detection), and (optionally) spot-checks a sample of external links for
-  broken status codes.
+- `src/crawler.js` — BFS crawler. Fetches `robots.txt` and every sitemap it
+  declares (following one level of sitemap-index), follows same-origin links
+  up to `maxPages`, respects `robots.txt` disallow rules, tracks crawl depth
+  and inbound link counts (for orphan-page detection), optionally renders
+  pages through a real headless browser (Playwright) instead of a plain HTTP
+  GET when JS rendering is requested and available, and (optionally)
+  spot-checks a sample of external links for broken status codes.
 - `src/analyzer.js` — runs the on-page checks against each crawled page's HTML
   (via `cheerio`) and returns a structured list of issues.
 - `src/scoring.js` — aggregates per-page issues plus site-wide checks
@@ -158,12 +208,14 @@ Some natural next steps if you want to take this further:
   heuristic with real Google Search Console API data (requires the site
   owner to grant OAuth access).
 - **Multi-user accounts** — add auth and per-user project storage.
-- **Deeper crawling** — honor `sitemap.xml` as a seed list, increase
-  `maxPages`, add a real job queue (BullMQ + Redis) so large crawls don't run
-  in-process.
+- **Deeper crawling** — increase `maxPages`, add a real job queue (BullMQ +
+  Redis) so large crawls don't run in-process.
 - **CSV export** — the report already exports to PDF via the browser's print
   dialog; a raw CSV/JSON export of issues would help users feed data into
   other tools.
+- **Automated tests** — everything so far has been verified with manual
+  curl/Playwright runs against a small local fixture site; a real test suite
+  (Jest/Vitest) would catch regressions as this keeps growing.
 
 ## Deploying this so a frontend builder (e.g. GHL AI Studio) can call it
 
@@ -175,15 +227,25 @@ process (Render, Railway, Fly.io, a small VPS — any of them work; free tiers
 exist on the first three), then point a frontend built anywhere else at its
 three endpoints:
 
-- `POST /api/audit` — `{ url, maxPages, checkExternalLinks }` → `{ id }`
+- `POST /api/audit` — `{ url, maxPages, checkExternalLinks, renderJs }` → `{ id }`
 - `GET /api/audit/:id` — poll for `{ status, crawled, total, summary, pages }`
 - `POST /api/rank-check` — `{ domain, keywords }` → `{ results }`
 
-Set `GOOGLE_PAGESPEED_API_KEY`, `GOOGLE_CUSTOM_SEARCH_API_KEY`, and
-`GOOGLE_CUSTOM_SEARCH_ENGINE_ID` as environment variables on whatever host you
-deploy to, and enable CORS for your frontend's domain (add
-`app.use(require('cors')())` in `server.js`, or restrict it to your specific
-origin) since the frontend will now be on a different domain than the API.
+CORS and rate limiting are already built in — you don't need to add
+anything. Set `ALLOWED_ORIGIN` to your frontend's exact URL once you have it
+(otherwise CORS defaults to open, fine while you're still testing), and set
+`API_SHARED_SECRET` per the section above so the two POST endpoints require
+your frontend's `X-API-Key` header. Set `GOOGLE_PAGESPEED_API_KEY`,
+`GOOGLE_CUSTOM_SEARCH_API_KEY`, and `GOOGLE_CUSTOM_SEARCH_ENGINE_ID` too if
+you want the Core Web Vitals and Google Index & Rank tabs populated — all
+five are just environment variables on whatever host you deploy to.
+
+If you plan to use JavaScript rendering regularly, budget more RAM than a
+bare-minimum free tier — a headless Chromium tab is heavier than a plain
+HTTP request, and a host with only ~512MB can struggle if it also has to run
+your Node process at the same time. It's fine as an occasional opt-in
+feature on a free tier; for routine use on SPA-heavy sites, a small paid
+instance is the safer choice.
 
 ## Notes on running this in a sandboxed/cloud environment
 

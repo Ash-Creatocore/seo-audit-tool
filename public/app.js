@@ -208,6 +208,17 @@
     badges.appendChild(badge('sitemap.xml ' + (s.sitemapFound ? 'found' : 'missing'), s.sitemapFound));
     badges.appendChild(badge(`${s.brokenPages} broken page(s)`, s.brokenPages === 0));
     badges.appendChild(badge(`${s.externalLinksChecked} external link(s) checked`, true));
+    if (s.renderJs && s.renderJs.requested) {
+      badges.appendChild(badge(s.renderJs.used ? 'JavaScript rendered' : 'JS rendering unavailable', s.renderJs.used));
+    }
+
+    const renderNote = document.getElementById('renderjs-note');
+    if (s.renderJs && s.renderJs.requested && !s.renderJs.used) {
+      renderNote.hidden = false;
+      renderNote.textContent = `You asked for JavaScript rendering, but it didn't run: ${s.renderJs.unavailableReason || 'unknown reason'} This audit used plain HTML instead, so content that only appears after JavaScript runs may be under-reported.`;
+    } else {
+      renderNote.hidden = true;
+    }
 
     renderCoreWebVitals(s.coreWebVitals);
 
@@ -338,12 +349,13 @@
     const url = document.getElementById('url').value.trim();
     const maxPages = document.getElementById('maxPages').value;
     const checkExternalLinks = document.getElementById('checkExternalLinks').checked;
+    const renderJs = document.getElementById('renderJs').checked;
 
     try {
       const res = await fetch('/api/audit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, maxPages, checkExternalLinks }),
+        body: JSON.stringify({ url, maxPages, checkExternalLinks, renderJs }),
       });
       const data = await res.json();
       if (!res.ok) {

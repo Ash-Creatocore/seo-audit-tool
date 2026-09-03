@@ -41,30 +41,85 @@ async function fetchRobots(origin) {
   }
 }
 
-async function fetchSitemap(origin) {
-  const sitemapUrl = origin + '/sitemap.xml';
+/** Pull every `Sitemap:` directive out of a robots.txt body (there can be more than one). */
+function extractSitemapDirectives(robotsContent) {
+  if (!robotsContent) return [];
+  const matches = robotsContent.match(/^\s*sitemap:\s*(\S+)/gim) || [];
+  return matches.map((line) => line.replace(/^\s*sitemap:\s*/i, '').trim()).filter(Boolean);
+}
+
+/** A sitemap file is either a <urlset> of real pages, or a <sitemapindex> of other sitemaps. */
+function parseSitemapXml(raw) {
+  const isIndex = /<sitemapindex[\s>]/i.test(raw);
+  const locMatches = raw.match(/<loc>([^<]+)<\/loc>/gi) || [];
+  const locs = locMatches.map((m) => m.replace(/<\/?loc>/gi, '').trim());
+  return { isIndex, locs };
+}
+
+async function fetchXmlFile(url) {
   try {
-    const res = await axios.get(sitemapUrl, {
+    const res = await axios.get(url, {
       timeout: 8000,
       headers: { 'User-Agent': USER_AGENT },
       validateStatus: () => true,
     });
-    const exists = res.status >= 200 && res.status < 300;
-    let urls = [];
-    if (exists && typeof res.data === 'string') {
-      // Cheap XML <loc> extraction — good enough for standard sitemaps and
-      // sitemap indexes alike; a page count sanity cap avoids pathological files.
-      const matches = res.data.match(/<loc>([^<]+)<\/loc>/gi) || [];
-      urls = matches
-        .map((m) => m.replace(/<\/?loc>/gi, '').trim())
-        .map((u) => normalizeUrl(u))
-        .filter(Boolean)
-        .slice(0, 5000);
+    if (res.status >= 200 && res.status < 300 && typeof res.data === 'string') {
+      return res.data;
     }
-    return { exists, url: sitemapUrl, status: res.status, urls };
   } catch {
-    return { exists: false, url: sitemapUrl, status: null, urls: [] };
+    /* candidate just doesn't exist / isn't reachable — not an error */
   }
+  return null;
+}
+
+/**
+ * Find and parse this site's sitemap(s): the conventional /sitemap.xml AND
+ * any sitemap(s) declared via `Sitemap:` lines in robots.txt (a common real
+ * -world pattern this tool previously missed). Follows one level of
+ * <sitemapindex> so a real page-URL list comes back either way, instead of
+ * mistaking a sitemap index's own file URLs for page URLs.
+ */
+async function fetchSitemap(origin, robotsContent) {
+  const declared = extractSitemapDirectives(robotsContent);
+  const candidates = [...new Set([origin + '/sitemap.xml', ...declared])];
+
+  const foundSitemapUrls = [];
+  const childSitemapsToFetch = [];
+  const pageUrls = new Set();
+
+  for (const sitemapUrl of candidates) {
+    const raw = await fetchXmlFile(sitemapUrl);
+    if (raw == null) continue;
+    foundSitemapUrls.push(sitemapUrl);
+    const { isIndex, locs } = parseSitemapXml(raw);
+    if (isIndex) {
+      childSitemapsToFetch.push(...locs);
+    } else {
+      for (const loc of locs) {
+        const n = normalizeUrl(loc);
+        if (n) pageUrls.add(n);
+      }
+    }
+  }
+
+  // One level of sitemap-index recursion, capped so a pathological/hostile
+  // index can't turn one audit into thousands of extra requests.
+  for (const childUrl of childSitemapsToFetch.slice(0, 20)) {
+    if (pageUrls.size >= 5000) break;
+    const raw = await fetchXmlFile(childUrl);
+    if (raw == null) continue;
+    const { locs } = parseSitemapXml(raw);
+    for (const loc of locs) {
+      const n = normalizeUrl(loc);
+      if (n) pageUrls.add(n);
+    }
+  }
+
+  return {
+    exists: foundSitemapUrls.length > 0,
+    sitemapUrls: foundSitemapUrls,
+    urls: [...pageUrls].slice(0, 5000),
+  };
 }
 
 /**
@@ -109,6 +164,74 @@ async function fetchPage(pageUrl) {
       responseTimeMs: Date.now() - startedAt,
       error: err.code || err.message || 'request_failed',
     };
+  }
+}
+
+// Playwright is an optional dependency: if it isn't installed (or its
+// browser binary can't launch — e.g. a memory-constrained free host), JS
+// rendering degrades to a clearly-labeled "unavailable" state rather than
+// silently crawling as plain HTML while claiming otherwise.
+let _playwright = null;
+let _playwrightLoadAttempted = false;
+function loadPlaywright() {
+  if (_playwrightLoadAttempted) return _playwright;
+  _playwrightLoadAttempted = true;
+  try {
+    _playwright = require('playwright');
+  } catch {
+    _playwright = null;
+  }
+  return _playwright;
+}
+
+/**
+ * Fetch a page through a real headless browser so client-rendered
+ * (React/Vue/SPA-style) content is captured — a plain HTTP GET only ever
+ * sees the pre-JS HTML, which is empty or near-empty for such sites.
+ */
+async function fetchPageRendered(pageUrl, browser) {
+  const startedAt = Date.now();
+  let page = null;
+  try {
+    page = await browser.newPage({ userAgent: USER_AGENT });
+    let response;
+    try {
+      response = await page.goto(pageUrl, { waitUntil: 'networkidle', timeout: 15000 });
+    } catch {
+      // Some pages never go fully idle (analytics beacons, polling); a
+      // DOM-ready load still captures rendered content for our purposes.
+      response = await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    }
+    const status = response ? response.status() : 0;
+    const finalUrl = page.url();
+    const html = await page.content();
+    return {
+      ok: true,
+      url: pageUrl,
+      finalUrl,
+      redirected: normalizeUrl(finalUrl) !== normalizeUrl(pageUrl),
+      status,
+      contentType: 'text/html',
+      isHtml: true,
+      html,
+      responseTimeMs: Date.now() - startedAt,
+      headers: {},
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      url: pageUrl,
+      finalUrl: pageUrl,
+      redirected: false,
+      status: 0,
+      contentType: '',
+      isHtml: false,
+      html: '',
+      responseTimeMs: Date.now() - startedAt,
+      error: err.message || 'render_failed',
+    };
+  } finally {
+    if (page) await page.close().catch(() => {});
   }
 }
 
@@ -166,6 +289,7 @@ async function crawlSite(startUrl, options = {}, onProgress = () => {}) {
   const maxPages = Math.min(options.maxPages || 30, 100);
   const concurrency = Math.min(options.concurrency || 5, 8);
   const checkExternalLinks = options.checkExternalLinks !== false;
+  const renderJsRequested = !!options.renderJs;
 
   const normalizedStart = normalizeUrl(startUrl);
   if (!normalizedStart) {
@@ -174,8 +298,35 @@ async function crawlSite(startUrl, options = {}, onProgress = () => {}) {
   const startUrlObj = new URL(normalizedStart);
   const origin = startUrlObj.origin;
 
-  const [robots, sitemap] = await Promise.all([fetchRobots(origin), fetchSitemap(origin)]);
+  // Sequential, not parallel: robots.txt may declare the sitemap's actual
+  // location via a `Sitemap:` line, so we need its content before we know
+  // every sitemap URL worth checking.
+  const robots = await fetchRobots(origin);
+  const sitemap = await fetchSitemap(origin, robots.content);
 
+  // JS rendering is opt-in and must degrade honestly: if the caller asked
+  // for it but this host can't actually do it (package missing, browser
+  // won't launch — common on memory-constrained free hosts), we report that
+  // plainly rather than silently falling back while claiming success.
+  let browser = null;
+  let renderJsUnavailableReason = null;
+  if (renderJsRequested) {
+    const pw = loadPlaywright();
+    if (!pw) {
+      renderJsUnavailableReason = 'The "playwright" package is not installed on this server. Pages were crawled as plain HTML instead.';
+    } else {
+      try {
+        browser = await pw.chromium.launch({ headless: true });
+      } catch (err) {
+        renderJsUnavailableReason = `Could not launch a headless browser (${err.message}). Pages were crawled as plain HTML instead.`;
+      }
+    }
+  }
+  // Rendered pages are far heavier (a full browser tab each) than a plain
+  // HTTP GET, so cap concurrency separately when rendering is active.
+  const pageConcurrency = browser ? Math.min(concurrency, 3) : concurrency;
+
+  try {
   const visited = new Set();
   const queue = [{ url: normalizedStart, depth: 0 }];
   const queuedUrls = new Set([normalizedStart]);
@@ -187,7 +338,7 @@ async function crawlSite(startUrl, options = {}, onProgress = () => {}) {
 
   while (queue.length > 0 && visited.size < maxPages) {
     const batch = [];
-    while (queue.length > 0 && batch.length < concurrency && visited.size + batch.length < maxPages) {
+    while (queue.length > 0 && batch.length < pageConcurrency && visited.size + batch.length < maxPages) {
       const { url: next, depth } = queue.shift();
       if (visited.has(next)) continue;
       if (SKIP_EXTENSIONS.test(new URL(next).pathname)) continue;
@@ -217,8 +368,8 @@ async function crawlSite(startUrl, options = {}, onProgress = () => {}) {
     }
     if (batch.length === 0) continue;
 
-    const fetched = await runPool(batch, concurrency, async ({ url, depth }) => {
-      const result = await fetchPage(url);
+    const fetched = await runPool(batch, pageConcurrency, async ({ url, depth }) => {
+      const result = browser ? await fetchPageRendered(url, browser) : await fetchPage(url);
       result.depth = depth;
       return result;
     });
@@ -298,7 +449,13 @@ async function crawlSite(startUrl, options = {}, onProgress = () => {}) {
     totalInternalLinksFound: allInternalLinksFound.size,
     orphanPages,
     depthDistribution,
+    renderJsRequested,
+    renderJsUsed: !!browser,
+    renderJsUnavailableReason,
   };
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+  }
 }
 
 module.exports = { crawlSite, normalizeUrl, fetchPage, extractLinks };
