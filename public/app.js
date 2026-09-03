@@ -399,6 +399,9 @@
     badges.appendChild(badge('sitemap ' + (s.sitemapFound ? 'found' : 'missing'), s.sitemapFound));
     badges.appendChild(badge(`${s.brokenPages} broken page(s)`, s.brokenPages === 0));
     badges.appendChild(badge(`${s.externalLinksChecked} external link(s) checked`, true, 'neutral'));
+    if (s.startRedirectedFrom) {
+      badges.appendChild(badge(`crawled ${new URL(job.startUrl).host} (redirected from ${new URL(s.startRedirectedFrom).host})`, true, 'neutral'));
+    }
     const https = s.homepage?.meta?.isHttps;
     badges.appendChild(badge(https ? 'HTTPS' : 'Not HTTPS', !!https));
     if (s.renderJs && s.renderJs.requested) {

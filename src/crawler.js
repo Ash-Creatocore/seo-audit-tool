@@ -349,10 +349,28 @@ async function crawlSite(startUrl, options = {}, onProgress = () => {}) {
   const checkExternalLinks = options.checkExternalLinks !== false;
   const renderJsRequested = !!options.renderJs;
 
-  const normalizedStart = normalizeUrl(startUrl);
+  let normalizedStart = normalizeUrl(startUrl);
   if (!normalizedStart) {
     throw new Error('Invalid start URL');
   }
+  // Resolve the start URL first. Sites commonly redirect www → non-www (or
+  // http → https). If we kept crawling from the URL the user typed, every
+  // link on the site would look "external" and the crawl would stop at one
+  // page — so adopt the final origin when it is the same registrable host
+  // (only the www prefix or scheme differs). The redirect itself is still
+  // reported as a finding.
+  let startRedirectedTo = null;
+  try {
+    const probe = await fetchPage(normalizedStart);
+    if (probe.ok && probe.redirected && probe.finalUrl) {
+      const a = new URL(normalizedStart).hostname.replace(/^www\./, '');
+      const b = new URL(probe.finalUrl).hostname.replace(/^www\./, '');
+      if (a === b) {
+        startRedirectedTo = normalizeUrl(probe.finalUrl);
+        normalizedStart = startRedirectedTo;
+      }
+    }
+  } catch { /* fall back to the URL as typed */ }
   const startUrlObj = new URL(normalizedStart);
   const origin = startUrlObj.origin;
 
@@ -526,6 +544,8 @@ async function crawlSite(startUrl, options = {}, onProgress = () => {}) {
     orphanPages,
     depthDistribution,
     inboundLinkCount: Object.fromEntries(inboundLinkCount),
+    startUrl: normalizedStart,
+    startRedirectedTo,
     renderJsRequested,
     renderJsUsed: !!browser,
     renderJsUnavailableReason,

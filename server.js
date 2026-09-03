@@ -110,14 +110,19 @@ app.post('/api/audit', requireApiKey, auditLimiter, async (req, res) => {
         }
       );
       const crawlTimeMs = Date.now() - crawlStartedAt;
+      // If the homepage redirected to a sibling host (www ↔ non-www, http →
+      // https), the crawl adopted that origin; use it everywhere below.
+      const crawlStart = crawlResult.startUrl || normalized;
+      job.startUrl = crawlStart;
+      job.startRedirectedFrom = crawlResult.startRedirectedTo ? normalized : null;
 
       job.phase = 'analyzing';
       const pageAudits = crawlResult.pages.map((page) => {
-        const audit = analyzePage(page, { isStartPage: (page.finalUrl || page.url) === normalized || page.url === normalized });
+        const audit = analyzePage(page, { isStartPage: (page.finalUrl || page.url) === crawlStart || page.url === crawlStart });
         audit.depth = page.depth ?? null;
         return audit;
       });
-      const startAudit = pageAudits.find((p) => p.meta.finalUrl === normalized || p.meta.url === normalized) || pageAudits[0];
+      const startAudit = pageAudits.find((p) => p.meta.finalUrl === crawlStart || p.meta.url === crawlStart) || pageAudits[0];
 
       // Site-level technical checks (HTTPS redirect, www, TLS, HTTP/2, DNS,
       // SPF/DMARC, favicon, custom 404, llms.txt, sampled broken images and
@@ -126,10 +131,10 @@ app.post('/api/audit', requireApiKey, auditLimiter, async (req, res) => {
       job.phase = 'site checks';
       let siteChecks = { checks: [], issues: [] };
       try {
-        const imageUrls = pageAudits.flatMap((p) => p.details?.imageUrls || []).filter((u) => { try { return new URL(u).origin === new URL(normalized).origin; } catch { return false; } });
-        const assetUrls = pageAudits.flatMap((p) => p.details?.assetUrls || []).filter((u) => { try { return new URL(u).origin === new URL(normalized).origin; } catch { return false; } });
+        const imageUrls = pageAudits.flatMap((p) => p.details?.imageUrls || []).filter((u) => { try { return new URL(u).origin === new URL(crawlStart).origin; } catch { return false; } });
+        const assetUrls = pageAudits.flatMap((p) => p.details?.assetUrls || []).filter((u) => { try { return new URL(u).origin === new URL(crawlStart).origin; } catch { return false; } });
         siteChecks = await runSiteChecks({
-          startUrl: normalized,
+          startUrl: crawlStart,
           robots: crawlResult.robots,
           sitemap: crawlResult.sitemap,
           startPageMeta: startAudit?.meta,
@@ -142,6 +147,7 @@ app.post('/api/audit', requireApiKey, auditLimiter, async (req, res) => {
 
       const summary = summarize(crawlResult, pageAudits, { crawlTimeMs, siteCheckIssues: siteChecks.issues });
       summary.siteChecks = siteChecks.checks;
+      summary.startRedirectedFrom = job.startRedirectedFrom;
       // Honest JS-rendering status: whether it was asked for, whether it
       // actually ran, and why not if it didn't — never silently downgraded.
       summary.renderJs = {
@@ -176,7 +182,7 @@ app.post('/api/audit', requireApiKey, auditLimiter, async (req, res) => {
       // Insights — keyless requests work at a small quota; a key raises it.
       job.phase = 'pagespeed';
       try {
-        summary.coreWebVitals = await getCoreWebVitals(normalized);
+        summary.coreWebVitals = await getCoreWebVitals(crawlStart);
       } catch (err) {
         summary.coreWebVitals = { configured: true, ok: false, error: err.message };
       }
@@ -184,14 +190,14 @@ app.post('/api/audit', requireApiKey, auditLimiter, async (req, res) => {
       // Real (heuristic) indexing check for the root URL only, to conserve
       // the Custom Search API's free daily quota.
       try {
-        summary.indexing = await checkIndexing(normalized);
+        summary.indexing = await checkIndexing(crawlStart);
       } catch (err) {
         summary.indexing = { configured: true, status: 'uncertain', error: err.message };
       }
 
       // Optional Google Safe Browsing (needs a free key; otherwise "not configured").
       try {
-        summary.safeBrowsing = await checkSafeBrowsing(normalized);
+        summary.safeBrowsing = await checkSafeBrowsing(crawlStart);
       } catch (err) {
         summary.safeBrowsing = { configured: true, ok: false, error: err.message };
       }
