@@ -22,7 +22,9 @@ if (process.env.SKIP_BROWSER_INSTALL) {
   process.exit(0);
 }
 
-const args = ['playwright', 'install', 'chromium'];
+// --only-shell: the headless shell is what headless launches use, and it is
+// one ~100MB download instead of three (full Chromium stalled on Render).
+const args = ['playwright', 'install', '--only-shell', 'chromium'];
 console.log(`[install-browser] Running: npx ${args.join(' ')} (PLAYWRIGHT_BROWSERS_PATH=${process.env.PLAYWRIGHT_BROWSERS_PATH || 'default'})`);
 const res = spawnSync(process.platform === 'win32' ? 'npx.cmd' : 'npx', args, { stdio: 'inherit', timeout: 10 * 60 * 1000 });
 if (res.status === 0) {
