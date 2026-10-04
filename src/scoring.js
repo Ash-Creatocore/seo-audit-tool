@@ -25,6 +25,42 @@ function computePageScore(issues) {
   return Math.max(0, Math.min(100, Math.round(100 - penalty)));
 }
 
+/**
+ * Orphan pages and crawl coverage, derived here from the raw crawl result.
+ *
+ * An orphan is a page in the sitemap that nothing links to. Inbound links are
+ * only known for pages the crawl actually visited, so a sitemap URL that was
+ * never reached tells us nothing - it is unvisited, not orphaned. Comparing a
+ * whole sitemap against a capped crawl produces a false positive for every
+ * page beyond the limit: a 157-URL sitemap crawled at 10 pages reported 147
+ * "orphans", and the count grew as the crawl got smaller, which is backwards.
+ */
+function analyzeOrphansAndCoverage(crawlResult) {
+  const sitemapUrls = (crawlResult.sitemap && crawlResult.sitemap.urls) || [];
+  const inbound = crawlResult.inboundLinkCount || {};
+  const startUrl = crawlResult.startUrl;
+
+  const crawled = new Set();
+  for (const page of crawlResult.pages || []) {
+    if (page.url) crawled.add(page.url);
+    if (page.finalUrl) crawled.add(page.finalUrl);
+  }
+
+  const orphanPages = sitemapUrls.filter(
+    (u) => u !== startUrl && crawled.has(u) && !(u in inbound)
+  );
+  const sitemapUrlsCrawled = sitemapUrls.filter((u) => crawled.has(u)).length;
+
+  return {
+    orphanPages,
+    coverage: {
+      sitemapUrls: sitemapUrls.length,
+      sitemapUrlsCrawled,
+      fullyCrawled: sitemapUrls.length > 0 && sitemapUrlsCrawled === sitemapUrls.length,
+    },
+  };
+}
+
 function computeSiteIssues(crawlResult, pageAudits) {
   const siteIssues = [];
 
@@ -103,9 +139,17 @@ function computeSiteIssues(crawlResult, pageAudits) {
     });
   }
 
-  const orphanPages = crawlResult.orphanPages || [];
+  const { orphanPages, coverage: crawlCoverage } = analyzeOrphansAndCoverage(crawlResult);
   if (orphanPages.length > 0) {
-    siteIssues.push({ id: 'orphan-pages', severity: 'notice', category: 'crawl', message: `${orphanPages.length} orphan page(s) in the sitemap have no internal links pointing to them.`, affected: orphanPages.length, urls: orphanPages });
+    const n = orphanPages.length;
+    siteIssues.push({ id: 'orphan-pages', severity: 'notice', category: 'crawl', message: `${n} crawled ${n === 1 ? 'page is' : 'pages are'} in the sitemap but ${n === 1 ? 'has' : 'have'} no internal links pointing to ${n === 1 ? 'it' : 'them'}.`, affected: n, urls: orphanPages });
+  }
+
+  // State the limits of the crawl rather than letting the reader assume the
+  // whole sitemap was assessed.
+  if (crawlCoverage.sitemapUrls > 0 && !crawlCoverage.fullyCrawled) {
+    const unchecked = crawlCoverage.sitemapUrls - crawlCoverage.sitemapUrlsCrawled;
+    siteIssues.push({ id: 'partial-sitemap-coverage', severity: 'notice', category: 'crawl', message: `This crawl covered ${crawlCoverage.sitemapUrlsCrawled} of the ${crawlCoverage.sitemapUrls} URLs in the sitemap. The remaining ${unchecked} were not visited, so orphan and duplicate findings apply only to the pages that were crawled. Raise "Pages to crawl" to cover more of the site.`, affected: unchecked, urls: [] });
   }
 
   const deep = pageAudits.filter((p) => (p.depth ?? 0) > 3).map((p) => p.meta.finalUrl);
@@ -172,13 +216,12 @@ function summarize(crawlResult, pageAudits, meta = {}) {
   tally(siteIssues, false, null);
   tally(siteCheckIssues, false, null);
 
-  let penalty = 0;
-  for (const sev of ['error', 'warning', 'notice']) penalty += counts[sev] * WEIGHTS[sev];
-  // Normalise by page count so a 100-page crawl isn't punished 10× harder
-  // than a 10-page crawl for the same per-page hygiene.
-  const pagesForNorm = Math.max(1, pageAudits.filter((p) => !p.meta.blockedByRobots).length);
-  const normalizedPenalty = penalty / Math.sqrt(pagesForNorm);
-  const score = Math.max(0, Math.min(100, Math.round(100 - normalizedPenalty)));
+  // Page findings are already reflected in each page's own score. Site-level
+  // findings (configuration, security headers, crawlability) apply once to the
+  // whole site, so they are counted separately and capped.
+  let siteLevelPenalty = 0;
+  for (const iss of [...siteIssues, ...siteCheckIssues]) siteLevelPenalty += WEIGHTS[iss.severity] || 0;
+  const siteDeduction = Math.min(35, siteLevelPenalty);
 
   const order = { error: 0, warning: 1, notice: 2 };
   const topIssues = [...issueFrequency.values()].sort((a, b) => (order[a.severity] - order[b.severity]) || (b.count - a.count));
@@ -191,13 +234,32 @@ function summarize(crawlResult, pageAudits, meta = {}) {
   const brokenLinksTotal =
     (crawlResult.pages || []).filter((p) => !p.blockedByRobots && (p.status >= 400 || p.status === 0)).length +
     (crawlResult.externalLinkResults || []).filter((l) => l.broken).length;
-  const orphanCount = (crawlResult.orphanPages || []).length;
+  const { orphanPages: realOrphans, coverage: sitemapCoverage } = analyzeOrphansAndCoverage(crawlResult);
+  const orphanCount = realOrphans.length;
   const duplicateCount = duplicateUrls.size;
-  const siteHealthPenalty = brokenLinksTotal * 3 + duplicateCount * 2 + orphanCount * 1.5;
+
+  // Each deduction is capped on its own and the total is capped again, so one
+  // noisy dimension cannot drive the score to zero on a site whose every page
+  // scores in the eighties.
+  const siteHealthPenalty = Math.min(
+    50,
+    Math.min(30, brokenLinksTotal * 3) + Math.min(20, duplicateCount * 2) + Math.min(20, orphanCount * 1.5)
+  );
   const siteHealthScore = Math.max(0, Math.min(100, Math.round(avgPageScore - siteHealthPenalty)));
+
+  // Headline = page quality minus capped site-wide problems. The previous
+  // formula summed every issue across every page and divided by the square
+  // root of the page count: the sum grows linearly with pages while the
+  // divisor grows as a square root, so a larger crawl always scored worse for
+  // identical per-page quality. That produced 53/100 above a page list where
+  // every page scored 83-89.
+  const score = Math.max(0, Math.min(100, Math.round(avgPageScore - siteDeduction)));
 
   return {
     score,
+    avgPageScore: Math.round(avgPageScore),
+    siteDeduction: Math.round(siteDeduction),
+    sitemapCoverage,
     counts,
     categoryScores: categoryScores(pageAudits, siteIssues, siteCheckIssues),
     totalPagesCrawled: pageAudits.length,
