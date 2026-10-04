@@ -5,12 +5,29 @@ const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const crypto = require('crypto');
 const path = require('path');
-const { crawlSite, normalizeUrl } = require('./src/crawler');
+const { crawlSite, normalizeUrl, describeUrlProblem } = require('./src/crawler');
 const { analyzePage } = require('./src/analyzer');
 const { summarize } = require('./src/scoring');
 const { getCoreWebVitals, checkIndexing, checkKeywordRank, checkSafeBrowsing } = require('./src/externalApis');
 const { runSiteChecks } = require('./src/siteChecks');
 const { recordAndDiff } = require('./src/rankHistory');
+
+/**
+ * Last-resort stability net.
+ *
+ * This service is used live, in front of an audience, by people typing
+ * arbitrary URLs. Site checks run several network probes concurrently through
+ * Promise.all, which surfaces the first rejection and leaves the rest
+ * unhandled - and an unhandled rejection terminates the Node process, taking
+ * the tool offline for everyone mid-audit. Log it and keep serving; the
+ * affected audit still reports its own error through the job status.
+ */
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason instanceof Error ? reason.stack : reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err && err.stack ? err.stack : err);
+});
 
 const app = express();
 app.set('trust proxy', 1); // needed for correct per-IP rate limiting behind Render/Railway/etc.'s proxy
@@ -72,7 +89,7 @@ app.post('/api/audit', requireApiKey, auditLimiter, async (req, res) => {
   const { url, maxPages, checkExternalLinks, renderJs } = req.body || {};
   const normalized = normalizeUrl(url || '');
   if (!normalized) {
-    return res.status(400).json({ error: 'Please provide a valid URL, e.g. https://example.com' });
+    return res.status(400).json({ error: describeUrlProblem(url || '') });
   }
 
   const id = newJobId();
