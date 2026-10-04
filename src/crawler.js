@@ -10,18 +10,131 @@ const USER_AGENT = 'SEOAuditBot/1.0 (+https://example.com/bot)';
 // File extensions we never want to fetch/parse as HTML pages
 const SKIP_EXTENSIONS = /\.(jpg|jpeg|png|gif|svg|webp|ico|css|js|json|xml|pdf|zip|rar|7z|mp4|mp3|wav|avi|mov|woff|woff2|ttf|eot|otf|doc|docx|xls|xlsx|ppt|pptx)$/i;
 
+/**
+ * URL validation for everything the public can point this tool at.
+ *
+ * Two jobs:
+ *   1. Be forgiving about how real people type a domain ("acme.com",
+ *      "www.acme.com"). A visitor should never be told their own website is
+ *      invalid because they left off https://.
+ *   2. Be strict about where the server is allowed to send requests. This
+ *      server fetches whatever URL it is given, so without a guard it is an
+ *      open SSRF proxy: a visitor could aim it at cloud metadata endpoints
+ *      (169.254.169.254), at machines on the host's private network, or at
+ *      the server itself. Every link the crawler discovers goes through here
+ *      too, so a page cannot steer the crawl inside a private network.
+ */
+const net = require('net');
+
+const BLOCKED_HOSTNAMES = new Set([
+  'localhost', 'localhost.localdomain', 'ip6-localhost', 'ip6-loopback',
+  'metadata', 'metadata.google.internal', 'metadata.goog',
+]);
+
+const BLOCKED_SUFFIXES = ['.localhost', '.local', '.internal', '.localdomain', '.home.arpa'];
+
+/** True for C0 controls, space and DEL - none belong in a URL. */
+function hasControlOrSpace(str) {
+  for (const ch of str) {
+    const code = ch.codePointAt(0);
+    if (code <= 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
+
+/** True when an IP literal points somewhere that is not the public internet. */
+function isPrivateAddress(rawHost) {
+  const host = String(rawHost).replace(/^\[|\]$/g, '');
+  const version = net.isIP(host);
+
+  if (version === 4) {
+    const parts = host.split('.').map(Number);
+    if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return true;
+    const [a, b] = parts;
+    if (a === 0) return true;                          // unspecified
+    if (a === 10) return true;                         // private
+    if (a === 127) return true;                        // loopback
+    if (a === 169 && b === 254) return true;           // link-local + cloud metadata
+    if (a === 172 && b >= 16 && b <= 31) return true;  // private
+    if (a === 192 && b === 168) return true;           // private
+    if (a === 100 && b >= 64 && b <= 127) return true; // carrier-grade NAT
+    if (a >= 224) return true;                         // multicast + reserved
+    return false;
+  }
+
+  if (version === 6) {
+    const ip = host.toLowerCase();
+    if (ip === '::' || ip === '::1') return true;
+    if (ip.startsWith('fe80')) return true;
+    if (/^f[cd]/.test(ip)) return true;
+    const mapped = ip.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (mapped) return isPrivateAddress(mapped[1]);
+    return false;
+  }
+
+  return false;
+}
+
 function normalizeUrl(rawUrl) {
+  if (typeof rawUrl !== 'string') return null;
+
+  let input = rawUrl.trim();
+  if (!input || input.length > 2048) return null;
+  if (hasControlOrSpace(input)) return null;
+
+  // Bare domain ("acme.com", "www.acme.com/about") - assume https://. Anything
+  // with a scheme keeps it, so non-http schemes are rejected below.
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(input)) input = 'https://' + input;
+
+  let u;
   try {
-    const u = new URL(rawUrl);
-    u.hash = '';
-    // strip trailing slash except root
-    if (u.pathname.length > 1 && u.pathname.endsWith('/')) {
-      u.pathname = u.pathname.slice(0, -1);
-    }
-    return u.toString();
+    u = new URL(input);
   } catch {
     return null;
   }
+
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+  if (u.username || u.password) return null;
+
+  const host = u.hostname.toLowerCase();
+  if (!host) return null;
+  if (BLOCKED_HOSTNAMES.has(host)) return null;
+  if (BLOCKED_SUFFIXES.some((s) => host.endsWith(s))) return null;
+  if (isPrivateAddress(host)) return null;
+
+  const bare = host.replace(/^\[|\]$/g, '');
+  if (!net.isIP(bare) && !host.includes('.')) return null;
+
+  u.hash = '';
+  if (u.pathname.length > 1 && u.pathname.endsWith('/')) {
+    u.pathname = u.pathname.slice(0, -1);
+  }
+  return u.toString();
+}
+
+/** A reason the visitor can act on, instead of a generic "invalid URL". */
+function describeUrlProblem(rawUrl) {
+  if (typeof rawUrl !== 'string' || !rawUrl.trim()) {
+    return 'Please enter a website address, for example acme.com';
+  }
+  const input = rawUrl.trim();
+
+  if (/^(javascript|data|file|ftp|mailto):/i.test(input)) {
+    return 'Only website addresses starting with http:// or https:// can be audited.';
+  }
+
+  let host = '';
+  try {
+    host = new URL(/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(input) ? input : 'https://' + input).hostname.toLowerCase();
+  } catch {
+    return 'That does not look like a website address. Try something like acme.com';
+  }
+
+  if (BLOCKED_HOSTNAMES.has(host) || BLOCKED_SUFFIXES.some((s) => host.endsWith(s)) || isPrivateAddress(host)) {
+    return 'That address points to a private or internal network, which cannot be audited. Enter a public website address.';
+  }
+
+  return 'That does not look like a website address. Try something like acme.com';
 }
 
 async function fetchRobots(origin) {
@@ -555,4 +668,4 @@ async function crawlSite(startUrl, options = {}, onProgress = () => {}) {
   }
 }
 
-module.exports = { crawlSite, normalizeUrl, fetchPage, extractLinks };
+module.exports = { crawlSite, normalizeUrl, describeUrlProblem, fetchPage, extractLinks };
