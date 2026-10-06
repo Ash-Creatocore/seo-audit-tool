@@ -26,6 +26,123 @@ function computePageScore(issues) {
 }
 
 /**
+ * Plain-English layer.
+ *
+ * Every finding also carries a version written for the business owner rather
+ * than their developer: what it means, why it costs them something, and who
+ * fixes it. "32 render-blocking scripts in <head>" tells a roofing contractor
+ * nothing; "your pages load slowly on phones" tells them whether to care.
+ *
+ * The technical message is never replaced - it stays on the finding for anyone
+ * who wants it. Findings with no entry here simply have no plain version, and
+ * the dashboard falls back to the technical wording rather than inventing one.
+ */
+const PLAIN_ENGLISH = {
+  // --- Found by search engines ---
+  'missing-title': { title: 'A page has no headline in Google', why: 'The title is the blue link people click in search results. Without one, Google invents something from the page, which is rarely what you would choose.', fix: 'Add a page title describing the page in about 60 characters.' },
+  'title-too-long': { title: 'A page title gets cut off in Google', why: 'Longer titles are truncated mid-sentence in search results, so the end of your message never gets read.', fix: 'Shorten the title to roughly 60 characters.' },
+  'title-too-short': { title: 'A page title is very short', why: 'Short titles waste space you could use to say what you do and where you do it.', fix: 'Expand the title to describe the service and the area you serve.' },
+  'multiple-title': { title: 'A page has more than one title', why: 'Search engines pick one and ignore the rest, so you do not control which is shown.', fix: 'Keep a single title tag per page.' },
+  'duplicate-title': { title: 'Several pages share the same title', why: 'Google struggles to tell these pages apart and may show the wrong one, or none of them.', fix: 'Give each page its own title describing that specific page.' },
+  'missing-meta-description': { title: 'A page has no description in Google', why: 'The description is the grey summary under your link. Without one, Google pulls a random sentence from the page, which often reads badly.', fix: 'Write a 150-character summary that gives someone a reason to click.' },
+  'meta-description-short': { title: 'A search description is very short', why: 'You have about 150 characters of free advertising under your link and are not using it.', fix: 'Expand the description to around 150 characters.' },
+  'meta-description-long': { title: 'A search description gets cut off', why: 'Anything past roughly 160 characters is replaced with an ellipsis, so your closing line never appears.', fix: 'Trim the description to about 155 characters.' },
+  'duplicate-meta-description': { title: 'Several pages share one description', why: 'Identical summaries make your pages look interchangeable in search results.', fix: 'Write a distinct description for each page.' },
+  'noindex': { title: 'A page is hidden from Google', why: 'This page carries an instruction telling search engines not to list it. If that was not deliberate, the page cannot be found at all.', fix: 'Remove the noindex tag unless the page is meant to be private.' },
+  'noindex-header': { title: 'A page is hidden from Google by the server', why: 'The server sends an instruction telling search engines not to list this page, so it will never appear in results.', fix: 'Ask your developer to remove the X-Robots-Tag noindex header.' },
+  'missing-canonical': { title: 'A page does not say which address is the real one', why: 'The same page can often be reached by several web addresses. Without a canonical tag, Google may treat them as duplicates and split your ranking between them.', fix: 'Add a canonical tag pointing at the preferred address.' },
+  'missing-sitemap': { title: 'No sitemap for search engines', why: 'A sitemap is the index that tells Google every page you have. Without one, newer pages can take much longer to be found.', fix: 'Generate a sitemap.xml - most website platforms do this automatically.' },
+  'missing-robots-txt': { title: 'No robots.txt file', why: 'This small file tells search engines how to crawl the site and where the sitemap is. Its absence is not fatal but it is a missed signal.', fix: 'Add a robots.txt at the site root with a Sitemap: line.' },
+
+  // --- Content ---
+  'missing-h1': { title: 'A page has no main heading', why: 'The main heading tells both visitors and Google what the page is about in one line. Without it, the page reads as unstructured.', fix: 'Add one clear H1 heading at the top of the page.' },
+  'multiple-h1': { title: 'A page has several main headings', why: 'More than one top-level heading muddies what the page is actually about.', fix: 'Keep one H1 and demote the others to H2.' },
+  'thin-content': { title: 'A page has very little text', why: 'Pages with little content rarely rank, and give visitors little reason to stay or call.', fix: 'Expand the page to properly answer what a customer would want to know.' },
+  'low-text-ratio': { title: 'A page is mostly code, not words', why: 'There is far more markup than readable text, which slows the page and gives search engines little to work with.', fix: 'Add more written content, or ask your developer to trim unused code.' },
+  'heading-hierarchy': { title: 'Headings skip levels', why: 'Jumping from a main heading straight to a small one makes the page structure harder for Google and screen readers to follow.', fix: 'Use headings in order - H2 under H1, H3 under H2.' },
+  'no-h2': { title: 'A long page has no subheadings', why: 'Walls of text without subheadings are skimmed and abandoned, especially on phones.', fix: 'Break the page up with descriptive subheadings.' },
+  'keyword-stuffing': { title: 'One phrase is repeated very often', why: 'Heavy repetition reads awkwardly to customers and can look manipulative to Google.', fix: 'Use natural variations instead of repeating the same phrase.' },
+  'duplicate-content': { title: 'Several pages have near-identical text', why: 'Google picks one and largely ignores the others, so the work put into those pages is wasted.', fix: 'Rewrite them to cover genuinely different topics, or merge them.' },
+  'duplicate-h1': { title: 'Several pages share the same main heading', why: 'Identical headings make distinct services look like the same page.', fix: 'Give each page a heading specific to its own subject.' },
+
+  // --- Images ---
+  'images-missing-alt': { title: 'Some images have no description', why: 'Alt text is what screen readers announce and what Google uses to understand a picture. Without it, your photos are invisible to both.', fix: 'Describe each image in a few words - "crew replacing asphalt shingle roof".' },
+  'images-missing-dimensions': { title: 'Images make the page jump while loading', why: 'Without a declared size, the layout shifts as photos load, and people tap the wrong thing.', fix: 'Set width and height on image tags.' },
+  'images-no-lazy': { title: 'All images load at once', why: 'Photos far down the page download immediately, slowing the first view on mobile data.', fix: 'Add lazy loading so images load as they are scrolled to.' },
+  'images-not-modern': { title: 'Photos use older, heavier formats', why: 'Modern formats like WebP are often half the size for the same quality, which matters most on phones.', fix: 'Convert large photos to WebP or AVIF.' },
+
+  // --- Speed ---
+  'render-blocking': { title: 'Pages load slowly on phones', why: 'Several files must finish downloading before anything appears on screen. Visitors on mobile data may leave before seeing your page.', fix: 'Ask your developer to defer non-essential scripts and styles.' },
+  'render-blocking-some': { title: 'Some files delay the first view', why: 'A few scripts or stylesheets hold up the first paint of the page.', fix: 'Defer or inline the ones that are not needed immediately.' },
+  'uncompressed-html': { title: 'Pages are sent uncompressed', why: 'Compression typically cuts page size by about 70% for free. Without it every visitor downloads far more than they need.', fix: 'Enable gzip or brotli on the server - usually a one-line change.' },
+  'html-large': { title: 'A page is unusually heavy', why: 'Large pages are slow on phones and cost visitors their mobile data.', fix: 'Trim unused code and compress images.' },
+  'html-too-large': { title: 'A page is very heavy', why: 'Pages this size are slow even on good connections, and slow pages lose calls.', fix: 'Ask your developer to reduce the page size.' },
+  'too-many-assets': { title: 'A page loads a lot of separate files', why: 'Each file is its own round trip to the server, and they add up on a phone.', fix: 'Combine or remove scripts and stylesheets that are not needed.' },
+  'dom-too-large': { title: 'A page is very complex to render', why: 'Very large pages make older phones sluggish to scroll and tap.', fix: 'Simplify the page structure or split it in two.' },
+  'slow-response': { title: 'The server is slow to respond', why: 'Visitors wait before anything starts loading, and Google counts this against you.', fix: 'Ask your host about server response time, or consider better hosting.' },
+  'moderate-response': { title: 'The server responds sluggishly', why: 'Not critical, but a faster server makes every page feel quicker.', fix: 'Worth raising with your host if it gets worse.' },
+
+  // --- Links ---
+  'not-found': { title: 'A page is broken', why: 'Visitors who follow this link hit a dead end, and search engines drop it from your site.', fix: 'Fix the link or redirect it to the right page.' },
+  'broken-external-links': { title: 'Links to other sites are broken', why: 'Dead outbound links look neglected and send visitors nowhere.', fix: 'Update or remove the broken links.' },
+  'redirect-chain': { title: 'Some links bounce through several hops', why: 'Each hop adds delay and loses a little ranking strength.', fix: 'Point links at the final address directly.' },
+  'redirect-loop': { title: 'A page redirects in a circle', why: 'This page can never load - visitors see an error.', fix: 'Fix the redirect rule causing the loop.' },
+  'too-many-links': { title: 'A page has a very large number of links', why: 'Attention and ranking strength are spread thin across too many destinations.', fix: 'Reduce the links to the ones that matter.' },
+  'empty-anchor-text': { title: 'Some links have no words', why: 'A link with no text tells nobody - visitor or search engine - where it goes.', fix: 'Give every link descriptive wording.' },
+  'generic-anchor-text': { title: 'Links say "click here"', why: 'Vague wording wastes a chance to tell Google what the linked page is about.', fix: 'Use descriptive text like "see our roof repair prices".' },
+  'orphan-pages': { title: 'Some pages have no links to them', why: 'Pages nothing links to are hard for visitors and search engines to find, however good they are.', fix: 'Link to them from a relevant page or the main menu.' },
+  'deep-pages': { title: 'Some pages are buried deep', why: 'Pages more than three clicks from the home page get less traffic and are crawled less often.', fix: 'Move important pages closer to the main navigation.' },
+  'http-links-on-https': { title: 'Secure pages link to insecure ones', why: 'Mixing secure and insecure links can trigger browser warnings.', fix: 'Update those links to https://.' },
+
+  // --- Trust and security ---
+  'not-https': { title: 'The site is not secure', why: 'Browsers show a "Not secure" warning on sites without HTTPS, which costs enquiries from anyone who notices.', fix: 'Install an SSL certificate - most hosts provide one free.' },
+  'mixed-content': { title: 'A secure page loads insecure files', why: 'This breaks the padlock in the address bar and can make the page look unsafe.', fix: 'Load all images and scripts over https://.' },
+  'missing-hsts': { title: 'Browsers are not told to stay secure', why: 'A visitor’s first request can still go over an insecure connection before being redirected.', fix: 'Ask your developer to add a Strict-Transport-Security header.' },
+  'x-powered-by': { title: 'The server announces its software version', why: 'Publishing exact version numbers makes it easier for attackers to target known weaknesses.', fix: 'Ask your developer to remove the X-Powered-By header.' },
+  'server-signature': { title: 'The server announces its software', why: 'Minor, but there is no reason to advertise what you run.', fix: 'Ask your host to suppress the server signature.' },
+  'missing-x-content-type-options': { title: 'A browser protection header is missing', why: 'A standard safeguard against certain file-type attacks is not switched on.', fix: 'Add the X-Content-Type-Options: nosniff header.' },
+  'missing-x-frame-options': { title: 'The site can be embedded by others', why: 'Without this, another site can frame your pages and trick visitors into clicking things.', fix: 'Add X-Frame-Options or a frame-ancestors policy.' },
+  'missing-csp': { title: 'No content security policy', why: 'An extra layer of protection against injected scripts is not configured.', fix: 'Worth adding, though lower priority than the items above.' },
+  'unsafe-cross-origin': { title: 'Links that open new tabs are unsafe', why: 'Links opening in a new tab without protection let the destination site interfere with yours.', fix: 'Add rel="noopener" to those links.' },
+
+  // --- Mobile and technical ---
+  'missing-viewport': { title: 'The site is not set up for phones', why: 'Without this, phones render the desktop layout shrunk down - text too small to read and buttons too small to tap. Most of your visitors are on phones.', fix: 'Add a viewport meta tag. This is urgent.' },
+  'viewport-no-width': { title: 'The mobile layout is misconfigured', why: 'The page may not size itself correctly to the phone screen.', fix: 'Set the viewport to width=device-width.' },
+  'missing-lang': { title: 'The page does not state its language', why: 'Screen readers and search engines have to guess what language the content is in.', fix: 'Add lang="en" to the html tag.' },
+  'missing-charset': { title: 'The page does not state its text encoding', why: 'Accented characters and symbols can display as nonsense.', fix: 'Add a charset meta tag.' },
+  'missing-doctype': { title: 'The page is missing its opening declaration', why: 'Browsers may fall back to a legacy rendering mode and display the page incorrectly.', fix: 'Add <!DOCTYPE html> as the first line.' },
+  'missing-structured-data': { title: 'Search engines cannot read your business details', why: 'Structured data is how Google and AI assistants learn your name, address, phone and hours. Without it they have to guess.', fix: 'Add LocalBusiness structured data - most SEO plugins can generate it.' },
+  'invalid-structured-data': { title: 'Your business details have an error', why: 'Broken structured data is ignored entirely, so the information never reaches Google.', fix: 'Validate it with Google’s Rich Results Test and fix the error.' },
+  'missing-open-graph': { title: 'Links look plain when shared', why: 'Shared on Facebook or WhatsApp, your pages appear without an image or summary and get far fewer clicks.', fix: 'Add Open Graph tags with a title, description and image.' },
+  'incomplete-open-graph': { title: 'Shared links are missing some detail', why: 'Part of the preview is there but incomplete, so it looks half-finished.', fix: 'Fill in the missing Open Graph tags.' },
+  'iframes': { title: 'A page embeds content from elsewhere', why: 'Embedded content is not read as part of your page, so any words inside it do not help you rank.', fix: 'Fine for maps and video - just do not put important text in one.' },
+  'inline-styles': { title: 'Styling is written into the page itself', why: 'Makes pages heavier and harder to maintain consistently.', fix: 'Move styling into a stylesheet.' },
+  'deprecated-html': { title: 'The page uses outdated code', why: 'Old tags may stop working in future browsers.', fix: 'Ask your developer to update them.' },
+  'plaintext-emails': { title: 'Email addresses are exposed', why: 'Addresses written plainly get harvested by spam bots.', fix: 'Use a contact form, or obfuscate the address.' },
+  'underscore-urls': { title: 'Some addresses use underscores', why: 'Google reads hyphens as word separators but not underscores, so the words run together.', fix: 'Use hyphens in new addresses - do not rename existing ones without redirects.' },
+  'url-underscore': { title: 'An address uses underscores', why: 'Google reads hyphens as word separators but not underscores.', fix: 'Prefer hyphens for new pages.' },
+  'uppercase-urls': { title: 'Some addresses mix capitals', why: 'Web addresses are case-sensitive, so capitals cause duplicates and broken links.', fix: 'Use lowercase addresses.' },
+  'long-urls': { title: 'Some addresses are very long', why: 'Long addresses are awkward to share and get truncated in search results.', fix: 'Keep addresses short and descriptive.' },
+  'url-too-long': { title: 'An address is very long', why: 'Hard to share and gets cut off in search results.', fix: 'Shorten it where practical.' },
+  'param-heavy-urls': { title: 'Some addresses carry many parameters', why: 'Parameter-heavy addresses can create duplicate versions of the same page.', fix: 'Use clean addresses where possible.' },
+  'no-analytics': { title: 'No website analytics detected', why: 'Without analytics you cannot tell how many people visit, or which pages bring enquiries.', fix: 'Install Google Analytics or similar.' },
+  'partial-sitemap-coverage': { title: 'Only part of the site was checked', why: 'This audit looked at a sample of pages. Findings apply to those pages, not the whole site.', fix: 'Not a problem - run a deeper crawl for full coverage.' },
+
+  // --- AI assistants ---
+  'ai-chatgpt': { title: 'ChatGPT cannot read your website', why: 'Your robots.txt tells OpenAI’s crawler to stay out, so ChatGPT cannot describe or recommend your business when someone asks.', fix: 'Remove the Disallow rule for GPTBot in robots.txt.' },
+  'ai-claude': { title: 'Claude cannot read your website', why: 'Your robots.txt blocks Anthropic’s crawler, so Claude cannot reference your business.', fix: 'Remove the Disallow rule for ClaudeBot in robots.txt.' },
+  'ai-gemini': { title: 'Google Gemini cannot use your content', why: 'Google-Extended is blocked, which keeps your content out of Gemini answers and AI Overviews.', fix: 'Remove the Disallow rule for Google-Extended in robots.txt.' },
+  'ai-perplexity': { title: 'Perplexity cannot read your website', why: 'Perplexity’s crawler is blocked, so it cannot cite you as a source.', fix: 'Remove the Disallow rule for PerplexityBot in robots.txt.' },
+  'ai-grok': { title: 'Grok cannot read your website', why: 'A crawler associated with xAI is blocked in robots.txt.', fix: 'Remove that Disallow rule if you want Grok to see the site.' },
+  'ai-commoncrawl': { title: 'Common Crawl cannot read your website', why: 'Common Crawl is a public dataset that many AI models learn from. Blocking it keeps you out of several assistants at once.', fix: 'Remove the Disallow rule for CCBot in robots.txt.' },
+};
+
+/** The plain-English version of a finding, or null if none is written. */
+function plainEnglishFor(id) {
+  return PLAIN_ENGLISH[id] || null;
+}
+
+/**
  * Orphan pages and crawl coverage, derived here from the raw crawl result.
  *
  * An orphan is a page in the sitemap that nothing links to. Inbound links are
@@ -224,7 +341,11 @@ function summarize(crawlResult, pageAudits, meta = {}) {
   const siteDeduction = Math.min(35, siteLevelPenalty);
 
   const order = { error: 0, warning: 1, notice: 2 };
-  const topIssues = [...issueFrequency.values()].sort((a, b) => (order[a.severity] - order[b.severity]) || (b.count - a.count));
+  const topIssues = [...issueFrequency.values()]
+    .sort((a, b) => (order[a.severity] - order[b.severity]) || (b.count - a.count))
+    // Attach the owner-facing wording. Findings with no entry keep only
+    // their technical message rather than getting an invented one.
+    .map((i) => ({ ...i, plain: plainEnglishFor(i.id) }));
 
   const pagesWithErrors = pageAudits.filter((p) => p.issues.some((i) => i.severity === 'error')).length;
   const brokenPages = pageAudits.filter((p) => !p.meta.blockedByRobots && (p.meta.status >= 400 || p.meta.status === 0)).length;
