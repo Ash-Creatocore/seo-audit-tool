@@ -264,6 +264,101 @@ async function checkResources(urls, id, label, sampleSize = 30) {
 }
 
 // --- robots.txt / sitemap quality ------------------------------------------------
+/**
+ * Can AI assistants reach this site?
+ *
+ * This is the measurable half of AEO. Whether a site gets *cited* inside a
+ * ChatGPT or Gemini answer is not something any provider exposes, and sampling
+ * the models gives a different answer every time - so this tool does not claim
+ * to measure it. What is verifiable is whether the site's robots.txt lets each
+ * assistant's crawler in at all, and plenty of SEO and security plugins block
+ * them by default without the owner ever knowing.
+ *
+ * A block is reported as fact. The absence of a block is reported only as "no
+ * rule blocks it" - not as proof the assistant has indexed the site, which
+ * depends on things robots.txt cannot tell us.
+ */
+const AI_ASSISTANTS = [
+  { id: 'ai-chatgpt',    label: 'ChatGPT can read this site',        agents: ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User'] },
+  { id: 'ai-claude',     label: 'Claude can read this site',         agents: ['ClaudeBot', 'anthropic-ai', 'Claude-User', 'Claude-SearchBot'] },
+  { id: 'ai-gemini',     label: 'Google Gemini can use this content', agents: ['Google-Extended'] },
+  { id: 'ai-perplexity', label: 'Perplexity can read this site',     agents: ['PerplexityBot', 'Perplexity-User'] },
+  // xAI publishes no crawler documentation we could verify, so these names come
+  // from third-party trackers. A block found here is still a real block; the
+  // absence of one is weaker evidence than for the others, and the note says so.
+  { id: 'ai-grok',       label: 'Grok (xAI) can read this site',     agents: ['xAI-SearchBot', 'Grokbot'], unverifiedAgents: true },
+  { id: 'ai-commoncrawl', label: 'Common Crawl can read this site',  agents: ['CCBot'], note: 'Common Crawl is training data for many AI models.' },
+];
+
+/**
+ * Does robots.txt disallow the site root for this user-agent?
+ * Most-specific group wins: an explicit agent group overrides the * group.
+ */
+function robotsDisallowsRoot(content, agent) {
+  const lines = String(content || '').split(/\r?\n/).map((l) => l.replace(/#.*$/, '').trim()).filter(Boolean);
+  const groups = [];
+  let current = null;
+  let expectingAgents = false;
+
+  for (const line of lines) {
+    const ua = line.match(/^user-agent\s*:\s*(.+)$/i);
+    if (ua) {
+      const name = ua[1].trim().toLowerCase();
+      if (expectingAgents && current) current.agents.push(name);
+      else { current = { agents: [name], rules: [] }; groups.push(current); }
+      expectingAgents = true;
+      continue;
+    }
+    const rule = line.match(/^(disallow|allow)\s*:\s*(.*)$/i);
+    if (rule && current) {
+      expectingAgents = false;
+      current.rules.push({ type: rule[1].toLowerCase(), path: rule[2].trim() });
+    }
+  }
+
+  const want = agent.toLowerCase();
+  const exact = groups.find((g) => g.agents.includes(want));
+  const wildcard = groups.find((g) => g.agents.includes('*'));
+  const group = exact || wildcard;
+  if (!group) return { blocked: false, explicit: false };
+
+  const blocks = group.rules.some((r) => r.type === 'disallow' && r.path === '/');
+  const allows = group.rules.some((r) => r.type === 'allow' && r.path === '/');
+  return { blocked: blocks && !allows, explicit: !!exact };
+}
+
+function checkAiCrawlers(robots) {
+  const out = [];
+
+  if (!robots || !robots.exists) {
+    for (const a of AI_ASSISTANTS) {
+      out.push(result(a.id, a.label, 'pass', 'No robots.txt, so nothing is blocked', 'With no robots.txt, crawlers are allowed by default.', 'crawl'));
+    }
+    return out;
+  }
+
+  const content = robots.content || '';
+  for (const a of AI_ASSISTANTS) {
+    const blockedBy = a.agents.filter((ag) => robotsDisallowsRoot(content, ag).blocked);
+
+    if (blockedBy.length) {
+      out.push(result(
+        a.id, a.label, 'fail',
+        'Blocked by robots.txt (' + blockedBy.join(', ') + ')',
+        'This assistant is told not to read the site, so it cannot describe or recommend the business. Remove the Disallow rule for ' + blockedBy.join(' and ') + ' in robots.txt.',
+        'crawl', 'error'
+      ));
+    } else {
+      const note = a.unverifiedAgents
+        ? 'No rule blocks it. xAI does not publish crawler documentation, so this is checked against community-maintained agent names rather than an official list.'
+        : (a.note || null);
+      out.push(result(a.id, a.label, 'pass', 'Not blocked by robots.txt', note, 'crawl'));
+    }
+  }
+
+  return out;
+}
+
 function analyzeRobots(robots, origin) {
   const out = [];
   if (!robots || !robots.exists) {
@@ -324,6 +419,7 @@ async function runSiteChecks(ctx) {
   ]);
   push(httpsRedirect); push(wwwResolve); push(startChain); push(tlsCert); push(h2); push(dnsResults); push(favicon); push(custom404); push(llms); push(adsTxt); push(images); push(assets);
   push(analyzeRobots(ctx.robots, origin));
+  push(checkAiCrawlers(ctx.robots));
   push(analyzeSitemap(ctx.sitemap, origin));
 
   // HSTS / security headers on the start page (from the crawl's real headers)
