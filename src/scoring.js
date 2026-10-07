@@ -128,6 +128,29 @@ const PLAIN_ENGLISH = {
   'no-analytics': { title: 'No website analytics detected', why: 'Without analytics you cannot tell how many people visit, or which pages bring enquiries.', fix: 'Install Google Analytics or similar.' },
   'partial-sitemap-coverage': { title: 'Only part of the site was checked', why: 'This audit looked at a sample of pages. Findings apply to those pages, not the whole site.', fix: 'Not a problem - run a deeper crawl for full coverage.' },
 
+  // --- Site-wide checks (ids arrive prefixed "site:") ---
+  'https-redirect': { title: 'The site does not force a secure connection', why: 'Someone typing your address without "https" stays on an unencrypted page. Browsers label those "Not secure", and Google prefers secure sites.', fix: 'Redirect all http:// traffic to https:// at the server or host.' },
+  'tls-cert': { title: 'A problem with the security certificate', why: 'This is what turns the padlock on. An expired or mismatched certificate shows visitors a full-page warning before they ever see your site.', fix: 'Renew or reissue the certificate - most hosts do this free and automatically.' },
+  'www-resolve': { title: 'Only one of www and non-www works', why: 'Anyone who types the other version gets an error. Old links, printed material and directory listings use whichever form they were given.', fix: 'Point both at the site and redirect one to the other.' },
+  'start-redirect-chain': { title: 'Your address redirects more than once', why: 'Each hop costs time before anything appears, and some of the ranking value of links passes through each one.', fix: 'Redirect straight to the final address in a single step.' },
+  'compression': { title: 'Pages are sent uncompressed', why: 'Compression typically cuts page weight by two thirds. Without it every visitor downloads several times more than they need, which is most noticeable on phones.', fix: 'Switch on gzip or brotli - usually one setting on the host.' },
+  'response-time': { title: 'The server is slow to answer', why: 'Nothing can appear on screen until the server responds. This delay is added to every single page view.', fix: 'Ask your host about server response time, or add caching.' },
+  'http2': { title: 'The site uses an older connection protocol', why: 'HTTP/2 loads many files at once instead of queueing them. On the older protocol a page with lots of images and scripts is noticeably slower.', fix: 'Enable HTTP/2 - most hosts and CDNs offer it as a switch.' },
+  'html-size': { title: 'The page code is unusually large', why: 'A heavy page costs mobile visitors time and data before any of your content appears.', fix: 'Remove unused page builder sections, plugins and inline code.' },
+  'security-headers': { title: 'Protective headers are missing', why: 'These are instructions to the browser that block common attacks on your visitors. They are not required, but they are free.', fix: 'Ask your developer to add the standard security headers.' },
+  'hsts': { title: 'Browsers are not told to always use HTTPS', why: 'On a first visit a browser can still be pushed to the unencrypted version of your site before the redirect happens.', fix: 'Add a Strict-Transport-Security header.' },
+  'spf': { title: 'No SPF record for your email', why: 'SPF lists who may send email as your domain. Without it, anyone can forge email from your address, and your own email is more likely to land in spam.', fix: 'Add an SPF record in your DNS settings - your email provider publishes the exact line.' },
+  'dmarc': { title: 'No DMARC policy for your email', why: 'DMARC tells other mail servers what to do with email that fails your checks. Without it, impersonation of your domain goes unreported.', fix: 'Add a DMARC record in your DNS settings, starting with a monitoring-only policy.' },
+  'dns': { title: 'Your domain settings could not be read', why: 'This check could not confirm where your domain points. That may be a restriction on the checking server rather than a fault with your site.', fix: 'Nothing to do unless your site is also unreachable for visitors.' },
+  'nameservers': { title: 'Which service controls your domain', why: 'Informational: this is where your DNS records live, which is useful to know before anyone changes them.', fix: 'No action needed.' },
+  'ipv6': { title: 'The site is not reachable over the newer internet protocol', why: 'Some mobile networks are IPv6-only and reach such sites through a translation layer, which adds a little delay. It is a minor point, not a fault.', fix: 'Optional - ask your host whether IPv6 is available.' },
+  'favicon': { title: 'No site icon', why: 'The small icon in the browser tab and in bookmarks. Without one your site shows a blank page symbol, which looks unfinished.', fix: 'Add a favicon - any square logo image will do.' },
+  'custom-404': { title: 'No proper page for broken links', why: 'When someone follows an old or mistyped link they should land on a page that offers a way back. A bare error page usually loses the visitor.', fix: 'Create a custom 404 page with your menu and a link home.' },
+  'robots-txt': { title: 'A problem with your robots.txt file', why: 'This file tells search engines how to crawl the site. A mistake in it can quietly hide pages from Google.', fix: 'Review the file at yoursite.com/robots.txt and remove anything you did not intend.' },
+  'robots-sitemap-directive': { title: 'Your robots.txt does not point at the sitemap', why: 'One line in robots.txt saves search engines guessing where your sitemap is. Small, free, and takes a minute.', fix: 'Add a line reading Sitemap: followed by your sitemap address.' },
+  'sitemap': { title: 'A problem with your sitemap', why: 'The sitemap is the index that tells Google every page you have. Without a usable one, newer pages take longer to be found.', fix: 'Generate a sitemap.xml - most website platforms do this automatically.' },
+  'sitemap-format': { title: 'Your sitemap cannot be read', why: 'The file exists but contains errors, so search engines skip it. You get none of the benefit of having one.', fix: 'Regenerate the sitemap with your platform or SEO plugin.' },
+  'server-software': { title: 'Which web server you run', why: 'Informational: useful context for whoever maintains the site.', fix: 'No action needed.' },
   // --- AI assistants ---
   'ai-chatgpt': { title: 'ChatGPT cannot read your website', why: 'Your robots.txt tells OpenAI’s crawler to stay out, so ChatGPT cannot describe or recommend your business when someone asks.', fix: 'Remove the Disallow rule for GPTBot in robots.txt.' },
   'ai-claude': { title: 'Claude cannot read your website', why: 'Your robots.txt blocks Anthropic’s crawler, so Claude cannot reference your business.', fix: 'Remove the Disallow rule for ClaudeBot in robots.txt.' },
@@ -139,7 +162,13 @@ const PLAIN_ENGLISH = {
 
 /** The plain-English version of a finding, or null if none is written. */
 function plainEnglishFor(id) {
-  return PLAIN_ENGLISH[id] || null;
+  if (PLAIN_ENGLISH[id]) return PLAIN_ENGLISH[id];
+  // Site-wide checks arrive prefixed ("site:compression") because they describe
+  // the whole site rather than one page. The wording is the same either way.
+  if (typeof id === 'string' && id.startsWith('site:')) {
+    return PLAIN_ENGLISH[id.slice(5)] || null;
+  }
+  return null;
 }
 
 /**
